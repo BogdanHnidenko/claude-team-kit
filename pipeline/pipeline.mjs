@@ -17,7 +17,7 @@ const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -31,7 +31,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'mark', 'template', 'doctor']
+const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -877,11 +877,13 @@ const LOG_ERROR = /(\bE\/|\berror\b|exception|fatal|unhandled|TypeError|Referenc
 async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) {
   const m = svc.mobile;
   const cwd = path.resolve(root, svc.path);
-  const outDir = path.join(taskDir(root, id), `sim-${platform}`);
+  const custom = typeof flags.flows === 'string' ? flags.flows : null; // exploration or regression run
+  const tag = custom ? `sim-${platform}-custom` : `sim-${platform}`;
+  const outDir = path.join(taskDir(root, id), tag);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   const report = { task: id, service: svc.name, platform, verdict: 'FAIL', device: null, built: false, flows: [], logErrors: [], screenshots: [], at: now() };
-  const write = () => writeJson(path.join(taskDir(root, id), `sim-${platform}.json`), report);
+  const write = () => writeJson(path.join(taskDir(root, id), `${tag}.json`), report);
   try {
     // 1. simulator
     const device = platform === 'ios' ? await bootIos(m.device.ios) : await bootAndroid(m.device.android);
@@ -926,7 +928,7 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
     logger.on('error', () => {});
     started.push({ name: 'device-log', child: logger });
     // 5. maestro
-    const flowsDir = path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
+    const flowsDir = custom ? path.resolve(root, custom) : path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
     if (!fs.existsSync(flowsDir)) fail(`no flows in ${posix(path.relative(root, flowsDir))}/ — write Maestro flows there first`);
     const junit = path.join(outDir, 'report.xml');
     const args = ['--device', device.id, 'test', flowsDir, '--format', 'junit', '--output', junit, '--test-output-dir', outDir,
@@ -941,8 +943,9 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
     report.flows = fs.existsSync(junit) ? parseJunit(fs.readFileSync(junit, 'utf8')) : [];
     report.logErrors = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => LOG_ERROR.test(l)).slice(0, 50);
     report.screenshots = listFiles(outDir, /\.png$/i).map((f) => posix(path.relative(root, f)));
-    report.log = `.pipeline/${id}/sim-${platform}/maestro.log`;
-    report.deviceLog = `.pipeline/${id}/sim-${platform}/device.log`;
+    report.log = `.pipeline/${id}/${tag}/maestro.log`;
+    report.deviceLog = `.pipeline/${id}/${tag}/device.log`;
+    if (custom) report.flowsDir = posix(path.relative(root, flowsDir));
     const failedFlows = report.flows.filter((f) => f.status === 'failed');
     report.verdict = t.status === 0 && report.flows.length && !failedFlows.length ? 'PASS' : 'FAIL';
     if (!report.flows.length) report.error = `maestro produced no results (exit ${t.status}): ${`${t.stdout}\n${t.stderr}`.trim().split('\n').slice(-10).join(' | ')}`;
@@ -952,6 +955,29 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
   }
   write();
   return report;
+}
+async function cmdScreen({ flags }) {
+  const { root, ws } = loadWorkspace();
+  const svc = (flags.service ? getService(ws, flags.service) : ws.services.find((s) => s.type === 'mobile')) ?? die('No mobile service in this workspace.');
+  const platform = flags.platform ?? (process.platform === 'darwin' && svc.mobile.platforms.includes('ios') ? 'ios' : 'android');
+  try {
+    const device = platform === 'ios' ? await bootIos(svc.mobile.device.ios) : await bootAndroid(svc.mobile.device.android);
+    const dir = path.join(root, '.pipeline', '_screen');
+    fs.mkdirSync(dir, { recursive: true });
+    const shot = path.join(dir, `${platform}-${Date.now()}.png`);
+    const cap = platform === 'ios'
+      ? tool('xcrun', ['simctl', 'io', device.id, 'screenshot', shot])
+      : (() => { const r = spawnSync('adb', ['-s', device.id, 'exec-out', 'screencap', '-p'], { maxBuffer: 1 << 28 }); if (r.status === 0) fs.writeFileSync(shot, r.stdout); return r; })();
+    const h = which('maestro') ? tool('maestro', ['--device', device.id, 'hierarchy'], { timeout: 60000 }) : null;
+    const tree = h?.status === 0 ? h.stdout : '';
+    // compact list of what a user can see/tap: text, testID (resource-id / identifier), accessibility label
+    const items = [...tree.matchAll(/"(text|resource-id|identifier|accessibilityText|hintText)"\s*:\s*"([^"]{1,120})"/g)].map((m) => `${m[1]}: ${m[2]}`);
+    fs.writeFileSync(path.join(dir, 'hierarchy.json'), tree);
+    log(`device: ${device.name} (${platform})`);
+    log(cap.status === 0 ? `screenshot: ${posix(path.relative(root, shot))}` : '⚠ screenshot failed');
+    log(items.length ? `visible elements:\n  ${[...new Set(items)].slice(0, 80).join('\n  ')}` : '⚠ no UI tree (is maestro installed and the app open?)');
+    log('full tree: .pipeline/_screen/hierarchy.json');
+  } catch (e) { if (e instanceof SimError) die(e.message); throw e; }
 }
 async function cmdSim({ pos, flags }) {
   const id = pos[0] ?? die('Usage: sim <task-id> [--platform ios|android|all] [--service name] [--rebuild] [--skip-build]');
@@ -977,7 +1003,7 @@ async function cmdSim({ pos, flags }) {
     for (const f of failedFlows) log(`   ✖ ${f.name}: ${f.error}`);
     if (r.error) log(`   ✖ ${r.error}`);
     if (r.logErrors.length) log(`   ⚠ ${r.logErrors.length} error line(s) in device log — see ${r.deviceLog}`);
-    log(`   report: .pipeline/${id}/sim-${platform}.json, screenshots: ${r.screenshots.length}`);
+    log(`   report: .pipeline/${id}/${flags.flows ? `sim-${platform}-custom` : `sim-${platform}`}.json, screenshots: ${r.screenshots.length}${flags.flows ? '  (custom run — not a release gate)' : ''}`);
   }
   if (!results.length) die('No platform could be tested on this machine.');
   if (results.some((r) => r.verdict !== 'PASS')) process.exit(1);
@@ -1362,6 +1388,7 @@ function cmdScaffold() {
   const { root, ws } = loadWorkspace();
   log(`Scaffolding ${posix(root)}`);
   copyIfMissing(root, 'spec.md', 'docs/specs/_TEMPLATE.md');
+  if (ws.services.some((s) => ['frontend', 'mobile'].includes(s.type))) copyIfMissing(root, 'testing-guide.md', 'docs/testing/_TEMPLATE.md');
   if (ws.contracts?.path) { fs.mkdirSync(path.join(root, ws.contracts.path, 'events'), { recursive: true }); log(`  + ${cleanPath(ws.contracts.path)}/ (and events/)`); }
   if (ws.e2e?.path) copyIfMissing(root, 'playwright.config.ts', path.join(cleanPath(ws.e2e.path), 'playwright.config.ts'));
   if (ws.e2eMobile?.path) copyIfMissing(root, 'maestro-flow.example.yaml', path.join(cleanPath(ws.e2eMobile.path), '_examples', 'AC-1.example.yaml'));
@@ -1437,7 +1464,7 @@ function cmdDoctor() {
   }
 }
 function cmdTemplate({ pos }) {
-  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml' };
+  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', 'testing-guide': 'testing-guide.md' };
   const f = map[pos[0]] ?? die(`Usage: template <${Object.keys(map).join('|')}>`);
   process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'templates', f), 'utf8'));
 }
@@ -1454,8 +1481,10 @@ const HELP = `Claude Team Kit — ${PL} <command>
   verify <id> [svc,..]           comments + lint/typecheck/test/build per service → verify.json
   verify <id> --only test,lint   partial run (any subset, incl. comments) → verify-partial.json, not a gate
   comments <id> [svc,..]         check that new functions/variables have comments in the workspace language
-  sim <id> [--platform ios|android|all] [--service app] [--rebuild] [--skip-build]
+  sim <id> [--platform ios|android|all] [--service app] [--rebuild] [--skip-build] [--flows dir]
                                  boot simulator, build/install app, start backends, run Maestro flows
+                                 (--flows: run another folder, e.g. exploration or full regression; not a gate)
+  screen [--platform ios|android] what is on the simulator now: screenshot + visible elements (testID, text)
   mark <id> stage=N status=S [loop=name] [note=..]   update task state; exit 3 at loop limit
   commit <id> -m "feat(x): .."   gated commit in every affected repo (no push)
   rollback <id>                  stash changes, return repos to their original branches
@@ -1465,7 +1494,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   add <id> <svc,..>              add services/projects to a running task (branches in their repos)
   stamp <id> <qa|qa-mobile>      tie a QA verdict to the current code (commit requires a fresh stamp)
   scaffold | doctor              set up / check the workspace
-  template <workspace|spec|playwright|mobile-flow>
+  template <workspace|spec|playwright|mobile-flow|testing-guide>
   guard                          PreToolUse hook (reads JSON on stdin)
   install-hook | uninstall-hook      used by install.sh / uninstall.sh
   install-memory | uninstall-memory  add/remove the language block in ~/.claude/CLAUDE.md`;
@@ -1477,7 +1506,7 @@ const COMMANDS = {
     const lang = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
     process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
   },
-  detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, comments: cmdComments, sim: cmdSim,
+  detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
   doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,

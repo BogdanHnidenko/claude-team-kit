@@ -23,4 +23,6 @@ Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace`.
 9. Don't add scripts or files inside services without asking; list services missing `lint`/`typecheck`/`test`.
 10. If the workspace root is not a git repo, suggest `git init` there (it versions the manifest, specs, contracts, e2e).
 
+For every web or mobile client offer to create its testing guide `docs/testing/<service>.md` from `docs/testing/_TEMPLATE.md`: ask me 3–5 short questions (what the app is for, who uses it and how, what must never break, where it usually breaks, test accounts) and fill it in Ukrainian.
+
 Finish with: what was created, what is missing, and a first command to try, e.g. `/feature <small web feature>`.

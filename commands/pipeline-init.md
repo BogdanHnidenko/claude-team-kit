@@ -30,4 +30,6 @@ Set up the Claude team pipeline for the current folder (the workspace root) — 
    - mobile: a smoke test (`e2e-mobile/smoke/AC-1.yaml` → `node ~/.claude/pipeline/pipeline.mjs start smoke <app> --no-qa` → `node ~/.claude/pipeline/pipeline.mjs sim smoke` → `node ~/.claude/pipeline/pipeline.mjs rollback smoke`);
    - if the root is not a git repo: `git init`; if sub-projects are separate repos and should be versioned together, see README part I (git submodules).
 
+For every web or mobile client offer to create its testing guide `docs/testing/<service>.md` from `docs/testing/_TEMPLATE.md`: ask me 3–5 short questions (what the app is for, who uses it and how, what must never break, where it usually breaks, test accounts) and fill it in Ukrainian.
+
 Finish with: what was created, the links, what is missing, and a first command to try, e.g. `/feature <small feature touching two projects>`.

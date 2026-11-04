@@ -39,5 +39,11 @@ List only the services that change, in build order (providers before consumers).
 2. AC-2: ...
 3. AC-3: ...
 
-## 6. Out of scope
+## 6. Test focus (for QA)
+- **What changed for the user:** screens / flows / API that are new or different.
+- **What could break nearby:** neighbouring flows that share the same screens, data or API (e.g. auth change → login, logout, session expiry, deep links into protected screens).
+- **Not to re-test:** unrelated parts of the app.
+- **Risky cases specific to this feature:** e.g. offline while saving, double submit, very long input.
+
+## 7. Out of scope
 - ...

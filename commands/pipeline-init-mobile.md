@@ -30,4 +30,6 @@ Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace` (see
 9. After I confirm: write `.pipeline/workspace.json`, run `node ~/.claude/pipeline/pipeline.mjs scaffold` and `node ~/.claude/pipeline/pipeline.mjs doctor`.
 10. Offer a smoke test once tools are installed: create `e2e-mobile/smoke/AC-1.yaml` (launch app, screenshot), `node ~/.claude/pipeline/pipeline.mjs start smoke <app> --no-qa`, then `node ~/.claude/pipeline/pipeline.mjs sim smoke`, and finally `node ~/.claude/pipeline/pipeline.mjs rollback smoke` — this proves build + install + Maestro work before the first real feature.
 
+For every web or mobile client offer to create its testing guide `docs/testing/<service>.md` from `docs/testing/_TEMPLATE.md`: ask me 3–5 short questions (what the app is for, who uses it and how, what must never break, where it usually breaks, test accounts) and fill it in Ukrainian.
+
 Finish with: what was created, what is missing, and a first command to try, e.g. `/feature <small mobile feature>`.
