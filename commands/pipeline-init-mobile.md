@@ -2,6 +2,8 @@
 description: Set up the team pipeline for a MOBILE project (React Native / Expo app + backend services) with simulator QA — writes or extends .pipeline/workspace.json
 ---
 
+Talk to me in Ukrainian throughout.
+
 Set up the Claude team pipeline in the current folder (the workspace root) for **mobile**: React Native / Expo app(s) → `team-mobile`, tests on iOS simulator / Android emulator → `team-qa-mobile` (Maestro), plus backend services and infra.
 Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace` (see the `mobile` service and `e2eMobile`).
 
@@ -20,7 +22,7 @@ Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace` (see
      Release builds embed the JS bundle, so the tests don't depend on Metro. Keep `"rebuildOn": "any"`.
    - `commands`: `lint`, `typecheck` (`npx tsc --noEmit`), `test` (`npx jest --ci`). No `build` here — the simulator build happens in QA.
 4. Set `"e2eMobile": { "path": "e2e-mobile", "timeoutSec": 1800 }` and `"contracts": { "path": "contracts" }` unless they exist.
-5. Set `conventions.comments` if missing: `{ "language": "uk", "level": "all", "enforce": true }`.
+5. Set `conventions.replyLanguage` to `"uk"` and `conventions.comments` if missing: `{ "language": "uk", "level": "all", "enforce": true }`.
 6. Backend URLs inside the app: the app must reach local backends during tests. iOS simulator sees the Mac's `localhost`; for Android the runner does `adb reverse` for every `dev.url` port, so `localhost` works too. Check how the app reads its API URL (e.g. `EXPO_PUBLIC_API_URL`) and tell me if it is hardcoded to a remote server.
 7. Check tools and report what's missing (don't install anything yourself): `maestro` (`curl -Ls "https://get.maestro.mobile.dev" | bash`), `java` 17+, Xcode + `xcrun` (iOS, macOS only), Android SDK `adb` + `emulator` in PATH.
 8. Show me ONE message: a table of services (name, type, path, repo, commands, dev url), the mobile block (framework, appIds, devices, build commands), missing tools, and at most 4 questions (e.g. platforms, EAS deploy profiles for `deploy`, comment level).

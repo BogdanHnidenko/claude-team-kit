@@ -733,7 +733,8 @@ function cmdConventions() {
   const lang = commentLanguage(ws);
   const c = ws.conventions?.comments;
   let text = fs.readFileSync(path.join(KIT_DIR, 'CONVENTIONS.md'), 'utf8');
-  text = text.replaceAll('{{LANGUAGE}}', `${lang.name} (${lang.native})`).replaceAll('{{LEVEL}}', c?.level ?? 'all');
+  const reply = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
+  text = text.replaceAll('{{LANGUAGE}}', `${lang.name} (${lang.native})`).replaceAll('{{LEVEL}}', c?.level ?? 'all').replaceAll('{{REPLY_LANGUAGE}}', `${reply.name} (${reply.native})`);
   if (!c) text += '\n> This workspace has no `conventions.comments` — the comment rules above are recommended, not enforced.\n';
   for (const rule of ws.conventions?.extra ?? []) text += `\n- ${rule}`;
   process.stdout.write(text.endsWith('\n') ? text : text + '\n');
@@ -1015,6 +1016,25 @@ function cmdUninstallHook({ pos }) {
   writeJson(file, settings);
   log(`✔ removed team-kit hook and permissions from ${file}`);
 }
+const MEM_START = '<!-- claude-team-kit:start -->';
+const MEM_END = '<!-- claude-team-kit:end -->';
+// Adds (or refreshes) the kit's block in the user-level CLAUDE.md without touching the rest of the file.
+function cmdInstallMemory({ pos }) {
+  const file = pos[0] ?? die('Usage: install-memory <~/.claude/CLAUDE.md>');
+  const block = `${MEM_START}\n${fs.readFileSync(path.join(KIT_DIR, 'USER_CLAUDE.md'), 'utf8').trim()}\n${MEM_END}`;
+  const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  const re = new RegExp(`${MEM_START}[\\s\\S]*?${MEM_END}`);
+  const next = re.test(cur) ? cur.replace(re, block) : `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${cur ? '\n' : ''}${block}\n`;
+  if (next !== cur) { if (cur) fs.copyFileSync(file, `${file}.bak.${Date.now()}`); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, next); }
+  log(`✔ language rules in ${file}`);
+}
+function cmdUninstallMemory({ pos }) {
+  const file = pos[0] ?? die('Usage: uninstall-memory <~/.claude/CLAUDE.md>');
+  if (!fs.existsSync(file)) return;
+  const cur = fs.readFileSync(file, 'utf8');
+  const next = cur.replace(new RegExp(`\\n*${MEM_START}[\\s\\S]*?${MEM_END}\\n?`), '\n').replace(/^\n+/, '');
+  if (next !== cur) { fs.copyFileSync(file, `${file}.bak.${Date.now()}`); fs.writeFileSync(file, next); log(`✔ removed team-kit block from ${file}`); }
+}
 function copyIfMissing(root, tpl, rel) {
   const dst = path.join(root, rel);
   if (fs.existsSync(dst)) return log(`  = ${rel} (exists)`);
@@ -1125,12 +1145,18 @@ const HELP = `Claude Team Kit — ${PL} <command>
   install-hook | uninstall-hook  used by install.sh / uninstall.sh`;
 
 const COMMANDS = {
-  rules: () => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8')),
+  rules: () => {
+    const root = findRoot(process.cwd());
+    const ws = root ? readJson(path.join(root, MANIFEST_REL), {}) : {};
+    const lang = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
+    process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
+  },
   conventions: cmdConventions, comments: cmdComments, sim: cmdSim,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
   doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
+  'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),
 };
 const [sub, ...rest] = process.argv.slice(2);

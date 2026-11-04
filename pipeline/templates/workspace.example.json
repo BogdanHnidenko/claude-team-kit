@@ -103,6 +103,7 @@
     }
   ],
   "conventions": {
+    "replyLanguage": "uk",
     "comments": {
       "language": "uk",
       "level": "all",

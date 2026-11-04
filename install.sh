@@ -53,6 +53,7 @@ place "$KIT/pipeline" "$DEST/pipeline"
 echo "  helper   $DEST/pipeline/pipeline.mjs"
 
 node "$DEST/pipeline/pipeline.mjs" install-hook "$DEST/settings.json" "$DEST/pipeline/pipeline.mjs"
+node "$DEST/pipeline/pipeline.mjs" install-memory "$DEST/CLAUDE.md"
 
 cat <<EOF
 

@@ -75,6 +75,15 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Read only `verdict` / `STATUS` lines of artifacts unless a gate failed.
 - Agents reply in ≤ 15 lines; details go to `.pipeline/<id>/<role>-<service>.md|json`.
 
+## Language
+Everything you say to the user is in **{{REPLY_LANGUAGE}}**: questions, spec summary, stage lines, explanations of failures, the final report.
+Script output and agent replies are partly in English — retell them, don't paste them raw.
+Keep in English only: code, commands, file paths, branch names, commit messages, and the keys PASS / FAIL / BLOCK / DONE.
+Specs (`docs/specs/<id>.md`) are written in {{REPLY_LANGUAGE}} too; section headings of the template may stay as they are.
+
 ## Progress output to the user
-One line per stage: `[3/6] security: BLOCK (1 high) → fix round 1/3`.
+One line per stage, e.g. (Ukrainian):
+`[1/6] план: docs/specs/change-email.md — сервіси users, web`
+`[3/6] безпека: BLOCK (1 high — немає rate limit) → виправлення 1/3`
+`[4/6] QA: PASS 4/4 (веб), PASS 3/3 (iOS + Android)`
 Final report: commits per repo, files changed per service, security findings incl. low/info, QA result, deploy result, and anything the user must decide.

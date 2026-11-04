@@ -71,11 +71,15 @@ Rules for good comments:
 The pipeline checks this automatically for JS/TS/Vue files (`verify` step `comments`).
 Run `node ~/.claude/pipeline/pipeline.mjs comments <task-id> <service>` before you report DONE and fix every line it lists.
 
-## 2. General
+## 2. Language of reports
+- Your reports in `.pipeline/<id>/*.md` and the free-text parts of your reply (NOTES, error explanations, findings `impact`/`fix`, QA `error`) are written in **{{REPLY_LANGUAGE}}**.
+- Keep in English: reply keys and values the script reads (`STATUS: DONE`, `SERVICE:`, `verdict: PASS|FAIL|BLOCK`, severity names), code, paths, commands.
+
+## 3. General
 - TypeScript strict; no `any` without a comment explaining why.
 - Small focused files; no drive-by refactors outside the task.
 - Validate external input at the boundary; never trust the client.
 - No secrets in code; document new env vars in `.env.example`.
 - Follow the existing patterns of the service before inventing new ones.
 
-## 3. Workspace-specific rules
+## 4. Workspace-specific rules
