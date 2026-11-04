@@ -59,12 +59,26 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - `reason: "ENV"` (simulator/emulator/tools missing, build failed) is not a code bug: show the user the error and what to install/fix; don't burn fix rounds on it.
 
 **5. RELEASE**
-- `team-devops` mode `verify` (first step is the comment-language check). FAIL → fix loop → repeat 3 (code changed), then 4 if UI/API behaviour changed, then 5.
+- `team-devops` mode `verify` (first step is the comment-language check). FAIL → fix loop → repeat 3 (code changed), then 4 (QA must be re-stamped on the final code), then 5.
 - `team-devops` mode `commit`. The script refuses if security/QA/verify are not PASS or if code changed after them — don't work around it, re-run the stage it names.
 
 **6. DEPLOY** (only if the user asked for it in this request, or `pipeline.autoDeploy` names an environment)
 - `team-devops` mode `deploy <env>`.
 - If the agent returns `APPROVAL_REQUIRED`: ask the user plainly ("Deploy <id> to <env>? yes/no"). Only after an explicit yes call `team-devops` with `Mode: deploy <env> approved`.
+
+## Direct commands (user steers instead of the full chain)
+The user can call single steps. Each one works inside a task, so the gates still protect the commit.
+
+**Which task:** the one the user names; otherwise `$PL current` (latest unfinished task). If there is none and the request changes code, start a small task: `$PL start <short-id> <services>` (e.g. `fix-login-android`).
+**Wrong project:** if the work belongs to a service that is not in the task, `$PL add <id> <service>` first.
+**Freshness:** any code change invalidates earlier checks. The commit is refused until security (diff + audit), QA (stamped) and verify are re-run on the final code — tell the user this when they fix things step by step, and offer `/commit` to finish.
+
+- **FIX** (`/fix`, `/fix-after-testing`): collect what is broken — the user's description and/or failures in the task's `qa.json`, `qa-mobile.json` (+ `sim-*.json`), `security.json` (BLOCK findings), `verify.json` / `verify.log`. Group by owner (`$PL owner <files>`, `owner_hint`). Send each owner ONLY its part (failure text, screenshot path, steps to reproduce, spec path). Then re-run only what failed first, for fast feedback: the failed QA (partial is fine), or `$PL verify <id> --only <step>`. Report. Then offer `/commit` (full gates). User-requested fix rounds do not count toward the automatic 3-round limit (`mark loop=` is only for the automatic chain).
+- **TEST** (`/test`): run checks without fixing. Scopes: `unit` / `lint` / `typecheck` / `comments` → `$PL verify <id> --only …` (optionally `[service]`); `web` / `api` → `team-qa`; `mobile` / `ios` / `android` → `team-qa-mobile` (platform in the prompt); `security` → stage 3 exactly; `all` → stage 3, 4, then `team-devops verify`. Report results with owners; do NOT fix unless the user asks.
+- **ASSIGN** (`/assign <role> <what>`): map the role (backend/бекенд → `team-backend`, web/frontend/фронт → `team-frontend`, mobile/додаток → `team-mobile`, qa/тест → `team-qa`, qa-mobile/тест-мобільний → `team-qa-mobile`, security/безпека → `team-security`, devops/деплой/інфра → `team-devops`). Pick the service from the request or `$PL services` (ask if two fit). Pass the user's instruction verbatim + task id + spec path if any. For `team-security` keep it blind: `$PL diff <id>` and the standard prompt; you may append the user's own focus words ("focus: …"), never your opinion.
+- **VERIFY** (`/verify`): `team-devops` mode verify (full gate) or `$PL verify <id> --only …` when the user names steps.
+- **COMMIT** (`/commit`): bring the task to a committable state — run whatever is stale in order: stage 3 (if code changed since the diff), stage 4 (if not stamped for the current code), `team-devops verify`, then `team-devops commit`. Use fix loops only if the user said "fix automatically"; otherwise stop at the first failure and report.
+- **PLAN** (`/plan`): stage 1 only — `$PL start`, spec, contracts, summary. Stop. The user continues with `/resume <id>`, `/assign …` or edits the spec first.
 
 ## Fix loops
 1. `$PL mark <id> loop=<security|qa|verify>` — exit code 3 means the limit is reached: go to **Failure**.

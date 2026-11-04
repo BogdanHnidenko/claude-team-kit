@@ -17,7 +17,7 @@ const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -31,7 +31,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['rules', 'detect', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'mark', 'template', 'doctor']
+const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'mark', 'template', 'doctor']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -325,18 +325,19 @@ function cmdDiff({ pos }) {
   if (lines > max) log(`⚠ diff is larger than ${max} lines — consider splitting the task; audit quality drops on huge diffs.`);
 }
 
-function cmdVerify({ pos }) {
+function cmdVerify({ pos, flags }) {
   const id = pos[0] ?? die('Usage: verify <task-id> [service,service]');
   const { root, ws } = loadWorkspace();
   const st = loadState(root, id);
   const names = pos[1] ? pos[1].split(',') : st.services;
-  const steps = ws.pipeline?.verifySteps ?? ['lint', 'typecheck', 'test', 'build'];
+  const only = typeof flags.only === 'string' ? flags.only.split(',').map((x) => x.trim()) : null;
+  const steps = (ws.pipeline?.verifySteps ?? ['lint', 'typecheck', 'test', 'build']).filter((x) => !only || only.includes(x));
   const timeout = (ws.pipeline?.stepTimeoutSec ?? 900) * 1000;
   const logFile = path.join(taskDir(root, id), 'verify.log');
   const results = [];
   let failed = null;
 
-  if (commentsEnforced(ws)) { // project convention: every function/variable has a comment in the chosen language
+  if (commentsEnforced(ws) && (!only || only.includes('comments'))) { // project convention: every function/variable has a comment in the chosen language
     process.stdout.write(`▶ comments (${commentLanguage(ws).name}) … `);
     const v = checkComments(root, ws, st, names);
     if (v.length) {
@@ -374,7 +375,8 @@ function cmdVerify({ pos }) {
   }
   const ran = results.filter((r) => r.status !== 'skipped').length;
   const verdict = failed ? 'FAIL' : 'PASS';
-  writeJson(path.join(taskDir(root, id), 'verify.json'), {
+  writeJson(path.join(taskDir(root, id), only || pos[1] ? 'verify-partial.json' : 'verify.json'), { // partial runs never count as the release gate
+    partial: Boolean(only || pos[1]), only, services: names,
     task: id, verdict, failed, log: failed ? `.pipeline/${id}/verify.log` : null,
     warning: ran === 0 ? 'no verify commands configured for these services' : null,
     results, hash: failed ? null : fingerprint(st, [PIPELINE_EXCLUDE]), at: now(),
@@ -413,7 +415,14 @@ function cmdCommit({ pos, flags }) {
   if (ver?.verdict !== 'PASS') problems.push(`verify.json verdict is ${ver?.verdict ?? 'missing'} (need PASS)`);
   if (!problems.length) {
     if (fingerprint(st, auditSpecs(ws)) !== st.auditHash) problems.push('code changed after the security audit — run diff + audit again');
-    if (fingerprint(st, [PIPELINE_EXCLUDE]) !== ver.hash) problems.push('code changed after verify — run verify again');
+    const full = fingerprint(st, [PIPELINE_EXCLUDE]);
+    if (full !== ver.hash) problems.push('code changed after verify — run verify again');
+    for (const t of targets) {
+      const kind = t === 'web' ? 'qa' : 'qa-mobile';
+      const stamp = st.stamps?.[kind];
+      if (!stamp) problems.push(`${kind} result is not stamped (QA agent must run: ${PL} stamp ${id} ${kind})`);
+      else if (stamp.hash !== full) problems.push(`code changed after ${kind === 'qa' ? 'web' : 'mobile'} tests — re-run them (/test)`);
+    }
   }
   if (problems.length) die(`Commit refused:\n  - ${problems.join('\n  - ')}`, 2);
 
@@ -1202,6 +1211,61 @@ function cmdDetect({ flags }) {
   log(`\nFull proposal: ${PL} detect --json`);
 }
 
+// ------------------------------------------------- direct-control helpers
+// The task the user most likely means: the latest one that is not finished.
+function cmdCurrent({ flags }) {
+  const { root } = loadWorkspace();
+  const db = readJson(tasksPath(root), { tasks: [] });
+  const sorted = [...db.tasks].filter((t) => fs.existsSync(statePath(root, t.id))).sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
+  const open = sorted.find((t) => t.status === 'IN_PROGRESS' || t.status === 'BLOCKED');
+  const t = open ?? (flags.any ? sorted[0] : null);
+  if (!t) { log('NONE'); process.exit(3); }
+  if (flags.json) return log(JSON.stringify({ id: t.id, status: t.status, stage: t.stage, services: t.services ?? [], qa: readJson(statePath(root, t.id)).qa ?? [] }));
+  log(t.id);
+}
+// Add services (and their repos) to a running task, e.g. when a fix turns out to belong to another project.
+function cmdAdd({ pos, flags }) {
+  const [id, svcArg] = pos;
+  if (!id || !svcArg) die('Usage: add <task-id> <service,service> [--allow-dirty]');
+  const { root, ws } = loadWorkspace();
+  const st = loadState(root, id);
+  const wanted = svcArg.split(',').map((s) => s.trim()).filter(Boolean).filter((n) => !st.services.includes(getService(ws, n).name));
+  if (!wanted.length) return log(`= ${id} already includes ${svcArg}`);
+  const groups = groupRepos(root, ws, wanted);
+  const branch = st.repos[0]?.branch ?? `${ws.pipeline?.branchPrefix ?? 'feat/'}${id}`;
+  for (const g of groups) {
+    const known = st.repos.find((r) => r.root === g.root);
+    if (known) { known.services = [...new Set([...known.services, ...g.services])]; continue; }
+    const dirty = gitOut(g.root, ['status', '--porcelain', '--', ...scope(g)]);
+    if (dirty && !flags['allow-dirty']) die(`${label(g)} has uncommitted changes:\n${dirty}\nCommit or stash them first (or pass --allow-dirty).`);
+    g.base = gitOut(g.root, ['rev-parse', 'HEAD']);
+    g.fromBranch = gitOut(g.root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    g.branch = branch;
+    const exists = git(g.root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { allowFail: true }).status === 0;
+    git(g.root, exists ? ['checkout', '-q', branch] : ['checkout', '-q', '-b', branch]);
+    // keep the workspace repo last: it records submodule pointers after the others commit
+    const wsIdx = st.repos.findIndex((r) => r.rel === '');
+    if (wsIdx >= 0) st.repos.splice(wsIdx, 0, g); else st.repos.push(g);
+  }
+  st.services = [...st.services, ...wanted];
+  if (Array.isArray(st.qa) && st.qa.length) st.qa = [...new Set([...st.qa, ...qaTargets(ws, st.services)])];
+  saveState(root, st);
+  updateTask(root, id, { services: st.services });
+  log(`✔ ${id}: added ${wanted.join(', ')} (branch ${branch})`);
+  log(`  QA now: ${(st.qa ?? []).join(', ') || 'skipped'}`);
+}
+// QA agents call this after writing their report: ties the verdict to the exact code that was tested.
+function cmdStamp({ pos }) {
+  const [id, kind] = pos;
+  const file = { qa: 'qa.json', 'qa-mobile': 'qa-mobile.json' }[kind] ?? die('Usage: stamp <task-id> <qa|qa-mobile>');
+  const { root } = loadWorkspace();
+  const st = loadState(root, id);
+  const verdict = readJson(path.join(taskDir(root, id), file), null)?.verdict ?? die(`.pipeline/${id}/${file} not found — write the report first`);
+  st.stamps = { ...(st.stamps ?? {}), [kind]: { verdict, hash: fingerprint(st, [PIPELINE_EXCLUDE]), at: now() } };
+  saveState(root, st);
+  log(`✔ ${kind} ${verdict} stamped for the current code of ${id}`);
+}
+
 // ------------------------------------------------------------ guard hook
 // `git` followed by any global options (-C dir, -c k=v, --no-pager…) before the subcommand.
 const G = String.raw`\bgit(?:\s+(?:-C|-c)\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+`;
@@ -1388,6 +1452,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   diff <id|adhoc>                build the blind-audit diff (.pipeline/<id>/diff.patch)
   owner <files..> | --file f     which agent owns these files
   verify <id> [svc,..]           comments + lint/typecheck/test/build per service → verify.json
+  verify <id> --only test,lint   partial run (any subset, incl. comments) → verify-partial.json, not a gate
   comments <id> [svc,..]         check that new functions/variables have comments in the workspace language
   sim <id> [--platform ios|android|all] [--service app] [--rebuild] [--skip-build]
                                  boot simulator, build/install app, start backends, run Maestro flows
@@ -1396,6 +1461,9 @@ const HELP = `Claude Team Kit — ${PL} <command>
   rollback <id>                  stash changes, return repos to their original branches
   deploy <env> [--task id] [--approved]   run deploy steps + healthchecks (+ rollback)
   status                         table of all tasks
+  current [--json] [--any]       the task the user most likely means (latest unfinished)
+  add <id> <svc,..>              add services/projects to a running task (branches in their repos)
+  stamp <id> <qa|qa-mobile>      tie a QA verdict to the current code (commit requires a fresh stamp)
   scaffold | doctor              set up / check the workspace
   template <workspace|spec|playwright|mobile-flow>
   guard                          PreToolUse hook (reads JSON on stdin)
@@ -1409,7 +1477,7 @@ const COMMANDS = {
     const lang = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
     process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
   },
-  detect: cmdDetect, conventions: cmdConventions, comments: cmdComments, sim: cmdSim,
+  detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, comments: cmdComments, sim: cmdSim,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
   doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,

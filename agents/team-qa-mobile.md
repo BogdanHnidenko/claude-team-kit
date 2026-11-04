@@ -56,4 +56,9 @@ It boots the simulator, starts backends, builds/installs the app only when neede
   "visual_issues": ["iOS: Save button hidden behind keyboard on iPhone SE size"]
 }
 ```
+Then run `node ~/.claude/pipeline/pipeline.mjs stamp <id> qa-mobile` — it ties your verdict to the exact code you tested (the commit is refused without a fresh stamp).
+
+## Partial requests
+If the prompt asks to test only some ACs, one platform (`--platform ios|android`) or a described scenario, test exactly that, still write `qa-mobile.json` (only those results, plus `"scope": "partial"`) and do NOT stamp — a partial run is not a release gate.
+
 Reply in ≤ 10 lines: verdict per platform, passed/total, failing ACs with one-line reason and owner hint, visual issues.

@@ -35,6 +35,9 @@ Each call you work on exactly ONE mobile app (service of type `mobile`).
 - No red-box errors, yellow-box warnings you introduced, or unhandled promise rejections in normal flows — the QA run fails on them.
 - Before finishing run the app's `typecheck`, `lint`, `test` commands from the manifest, then `node ~/.claude/pipeline/pipeline.mjs comments <id> <service>`, and fix everything they report.
 
+## Direct requests from the user
+Sometimes the prompt is a direct instruction (via `/assign` or `/fix`) instead of a spec section: a bug description, a QA failure, a refactor. Do exactly that, stay in your scope, keep the conventions, run your checks and `comments` as usual. If the real cause is in another project, reply `STATUS: BLOCKED` with where and what — don't patch around it.
+
 ## Output
 Write `.pipeline/<id>/mobile-<service>.md`: files changed, screens/routes, the full `testID` list per screen, native changes, new env vars, deviations.
 Reply in ≤ 15 lines:

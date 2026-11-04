@@ -53,4 +53,9 @@ Test behaviour as a user or API client sees it. Do not read application code to 
   ]
 }
 ```
+Then run `node ~/.claude/pipeline/pipeline.mjs stamp <id> qa` — it ties your verdict to the exact code you tested (the commit is refused without a fresh stamp).
+
+## Partial requests
+If the prompt asks to test only some ACs, or a described scenario, test exactly that, still write `qa.json` (only those results, plus `"scope": "partial"`) and do NOT stamp — a partial run is not a release gate.
+
 Reply in ≤ 10 lines: verdict, passed/total, each failing AC with a one-line reason and owner hint.
