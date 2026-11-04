@@ -1,172 +1,552 @@
 # Claude Team Kit — AI-команда для веб- і мобільних проєктів
 
-Набір ставиться **один раз на комп'ютер** у `~/.claude` і далі працює в будь-якому проєкті.
-У проєкті з'являється лише маніфест `.pipeline/workspace.json` плюс папки для ТЗ, контрактів і тестів.
-Агентів і правила в кожен проєкт копіювати **не треба**.
+Це набір агентів для Claude Code. Він ставиться **один раз на комп'ютер** і далі працює в будь-якому проєкті.
+У проєкті з'являється тільки один файл-«паспорт», `.pipeline/workspace.json`, а створює його сам Claude.
 
-```
-~/.claude/                     ← один раз на ПК, спільне для всіх проєктів
-├── agents/    team-backend, team-frontend, team-mobile, team-security,
-│              team-qa, team-qa-mobile, team-devops
-├── commands/  /pipeline-init-web  /pipeline-init-mobile  /feature  /audit
-│              /resume  /deploy  /pipeline-status
-└── pipeline/  pipeline.mjs (двигун), PIPELINE.md (правила), CONVENTIONS.md (стиль коду), шаблони
+**Зміст**
+- [Частина A. Один раз на комп'ютер](#частина-a-один-раз-на-компютер) — встановити кіт
+- [Частина B. Тільки для мобільних додатків](#частина-b-тільки-для-мобільних-додатків-один-раз-на-компютер) — Java, Android, Xcode, Maestro, `~/.zshenv`
+- [Частина C. Один раз на кожен проєкт](#частина-c-один-раз-на-кожен-проєкт) — підключити проєкт
+- [Частина D. Щоденна робота](#частина-d-щоденна-робота)
+- [Частина E. Що де лежить і що куди вписувати](#частина-e-що-де-лежить-і-що-куди-вписувати)
+- [Частина F. Як усе влаштовано](#частина-f-як-усе-влаштовано)
+- [Частина G. Якщо щось не працює](#частина-g-якщо-щось-не-працює)
+- [Частина H. Усі команди](#частина-h-усі-команди) — повний довідник
 
-<будь-який проєкт>/
-└── .pipeline/workspace.json   ← єдине обов'язкове на рівні проєкту
-```
-
-## Команда
-
-| | Веб | Мобільний (React Native / Expo) |
-|---|---|---|
-| Бекенд | `team-backend` | `team-backend` (той самий) |
-| Клієнт | `team-frontend` | `team-mobile` |
-| QA | `team-qa` — Playwright у браузері | `team-qa-mobile` — Maestro на iOS-симуляторі / Android-емуляторі |
-| Безпека | `team-security` (сліпий аудит) | `team-security` (+ мобільний чекліст) |
-| DevOps | `team-devops`: Docker, CI, деплой | `team-devops`: + EAS build / submit |
-
-В одному воркспейсі можуть бути одночасно веб, мобільний додаток і будь-яка кількість мікросервісів.
-Яких агентів кликати, Оркестратор вирішує за типом сервісу, якого торкається задача.
+### Дві речі, які варто знати перед стартом
+- **`~`** — це твоя домашня тека. На Mac це `/Users/<твоє-імʼя>`, наприклад `/Users/bohdanhnidenko`. Тобто `~/.zshenv` = `/Users/bohdanhnidenko/.zshenv`.
+- **Крапка на початку назви** (`.claude`, `.zshenv`, `.pipeline`) робить файл чи теку прихованими. У Finder їх видно, якщо натиснути `Cmd + Shift + .`. У терміналі їх показує `ls -la`.
 
 ---
 
-## 1. Встановлення (один раз на кожен ПК)
+## Частина A. Один раз на комп'ютер
+
+### A1. Перевір, що є Node.js і git
 
 ```bash
-git clone https://github.com/<ти>/claude-team-kit.git ~/dev/claude-team-kit
+node -v     # потрібно v18 або новіше
+git --version
+```
+
+Якщо `node` не знайдено, встанови його з https://nodejs.org (версія LTS) і перезапусти термінал.
+
+### A2. Скачай кіт
+
+```bash
+mkdir -p ~/dev
+cd ~/dev
+git clone https://github.com/<ТВІЙ_НІК>/claude-team-kit.git
+```
+
+Тепер кіт лежить у `~/dev/claude-team-kit`.
+⚠️ **Не видаляй і не переміщуй цю теку.** Claude читає налаштування саме звідти.
+
+### A3. Встанови
+
+```bash
 cd ~/dev/claude-team-kit
 bash install.sh --link
-node ~/.claude/pipeline/pipeline.mjs doctor      # перевірка
 ```
 
-- `--link` створює симлінки на цю папку, тому `~/dev/claude-team-kit` **не видаляй і не переміщуй**.
-- **Оновлення:** `cd ~/dev/claude-team-kit && git pull && bash install.sh --link`. Повторний `install.sh` потрібен, лише коли з'явились нові агенти чи команди. Зміни в наявних файлах із `--link` діють одразу.
-- Якщо в `~/.claude` вже лежав твій файл з таким самим ім'ям, він зберігається як `.bak.<час>`. Твої налаштування в `settings.json` не перезаписуються.
-- Вимоги: Node.js 18+ і git. На Windows запускай через WSL або Git Bash.
-- Видалення: `bash uninstall.sh`.
+Що зробила ця команда:
+| Куди | Що | Навіщо |
+|---|---|---|
+| `~/.claude/agents/` | посилання на 7 агентів `team-…` | Claude Code бачить їх у всіх проєктах |
+| `~/.claude/commands/` | посилання на команди `/feature`, `/pipeline-init-web`, … | щоб з'явились слеш-команди |
+| `~/.claude/pipeline/` | посилання на «двигун» `pipeline.mjs` і правила | точні операції: гілки, перевірки, коміти |
+| `~/.claude/settings.json` | охоронець + дозволи | блокує `git push`, читання `.env` тощо |
+| `~/.claude/CLAUDE.md` | блок «відповідай українською» | Claude відповідає українською в усіх сесіях |
 
----
+`~/.claude` — це загальна тека Claude Code для твого користувача на цьому Mac. Твої власні налаштування в ній не перезаписуються, а від змінених файлів робляться копії `.bak.<час>`.
 
-## 2. Новий проєкт
+### A4. Перевір
 
 ```bash
-mkdir myapp && cd myapp && git init
-# створи або склонуй сервіси: services/api, web/, apps/mobile/ ...
-# (кожен може бути окремим git-репо; у кожному потрібен хоча б один коміт)
-claude
-/pipeline-init-web        # якщо є веб
-/pipeline-init-mobile     # якщо є мобільний додаток (можна обидві)
+node ~/.claude/pipeline/pipeline.mjs doctor
 ```
 
-Init-команда сама знайде сервіси, покаже таблицю, поставить до 4 питань і після твого «ок» створить `workspace.json`, `docs/specs/`, `contracts/`, `e2e/` або `e2e-mobile/`, а потім запустить `doctor`.
-Закоміть `.pipeline/workspace.json` у репо воркспейсу.
+✅ Має бути `✔ node …`, `✔ git …`, `✔ guard hook installed`.
+⚠️ Рядок `no .pipeline/workspace.json here` зараз нормальний: ти не в проєкті.
 
-Далі вся робота йде через `/feature <що зробити>`.
+Потім відкрий Claude Code (`claude` у терміналі; якщо він був відкритий, закрий і відкрий знову):
+- напиши `/agents` → у списку має бути 7 агентів `team-…`;
+- напиши `/` → у підказках мають бути `/feature`, `/pipeline-init-web`, `/pipeline-init-mobile`.
 
-## 3. Існуючий проєкт
+### A5. Як оновлювати кіт потім
 
-1. Закоміть усі зміни: пайплайн не стартує на «брудному» репо.
-2. `cd` у корінь (папку, де лежать фронт / додаток / сервіси) → `claude` → `/pipeline-init-web` та/або `/pipeline-init-mobile`.
-3. Якщо сервіси розкидані по диску, створи над ними одну папку і переклади або склонуй їх туди.
+```bash
+cd ~/dev/claude-team-kit && git pull && bash install.sh --link
+```
 
-Повторний запуск init **доповнює** маніфест і нічого не видаляє. Так можна спершу підключити бекенд і веб, а мобільний додаток додати пізніше.
+Після цього перезапусти Claude Code.
 
 ---
 
-## 4. Коментарі українською
+## Частина B. Тільки для мобільних додатків (один раз на комп'ютер)
 
-У маніфесті:
+Якщо робиш лише веб, пропусти цю частину.
+
+### B1. Android Studio (емулятор Android + Java)
+
+1. Скачай і встанови Android Studio: https://developer.android.com/studio
+2. Відкрий її → **More Actions → SDK Manager**:
+   - вкладка **SDK Platforms**: постав галочку на одній свіжій версії Android (наприклад, Android 15 / API 35);
+   - вкладка **SDK Tools**: галочки на **Android SDK Build-Tools**, **Android Emulator**, **Android SDK Platform-Tools** → **Apply**.
+3. **More Actions → Virtual Device Manager → Create Device** → вибери, наприклад, Pixel 8 → систему API 35 → **Finish**.
+4. Запам'ятай **точну назву** емулятора (AVD). Вона знадобиться в кроці B5.
+
+Java окремо ставити не треба: вона вже є всередині Android Studio (папка `jbr`), і нижче ми просто вкажемо до неї шлях.
+
+### B2. Xcode (симулятор iPhone), тільки на Mac
+
+1. Встанови **Xcode** з App Store (він великий, це займе час).
+2. Один раз виконай у терміналі:
+   ```bash
+   sudo xcode-select -s /Applications/Xcode.app
+   xcodebuild -runFirstLaunch
+   ```
+3. Відкрий Xcode → **Settings → Components** (або **Platforms**) → встанови **iOS** (симулятор).
+4. Для React Native потрібен CocoaPods:
+   ```bash
+   brew install cocoapods
+   ```
+   Якщо `brew` не знайдено, спершу встанови Homebrew з https://brew.sh.
+
+### B3. Maestro (запускає тести на симуляторі)
+
+```bash
+curl -Ls "https://get.maestro.mobile.dev" | bash
+```
+
+Він встановиться в `~/.maestro/bin`. Цю команду запускаєш **ти сам**: агентам таке заборонено правилами безпеки.
+
+### B4. Пропиши шляхи в `~/.zshenv`
+
+Термінал на Mac (zsh) читає файл `~/.zshenv` при кожному запуску, і Claude Code теж. Там ми скажемо, де лежать Java, Android-інструменти і Maestro.
+`~/.zshenv` — це не тека, а прихований **файл** у домашній теці (`/Users/<твоє-імʼя>/.zshenv`). Якщо його ще немає, це нормально.
+
+1. Створи (якщо його немає) і відкрий файл:
+   ```bash
+   touch ~/.zshenv && open -e ~/.zshenv
+   ```
+   `touch` створює файл, тільки якщо його ще немає, а якщо він є, нічого в ньому не змінює. `open -e` відкриває файл у TextEdit.
+
+2. Встав у кінець файлу цей блок:
+   ```sh
+   # Claude Team Kit — інструменти для мобільних тестів
+   export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+   export ANDROID_HOME="$HOME/Library/Android/sdk"
+   export PATH="$PATH:$HOME/.maestro/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$JAVA_HOME/bin"
+   ```
+   Що це означає:
+   - `JAVA_HOME` — де лежить Java (та, що вбудована в Android Studio). Вона потрібна Maestro і збірці Android.
+   - `ANDROID_HOME` — де Android Studio тримає SDK.
+   - `PATH` — список тек, де термінал шукає команди. Ми додаємо туди `maestro`, `adb` і `emulator`.
+
+3. Збережи: `Cmd + S`. Якщо TextEdit пропонує формат, файл має лишитися **простим текстом** (меню **Format → Make Plain Text**).
+
+4. Закрий **усі** вікна терміналу і відкрий новий. Якщо Claude Code був запущений, перезапусти і його.
+
+### B5. Перевір мобільні інструменти
+
+У новому вікні терміналу:
+
+```bash
+java -version                         # має показати версію 17 або новішу
+adb version                           # Android Debug Bridge …
+emulator -list-avds                   # назва твого емулятора, напр. Pixel_8_API_35
+maestro --version                     # версія Maestro
+xcrun simctl list devices available   # список симуляторів iPhone (тільки Mac)
+```
+
+Запиши дві назви, вони підуть у налаштування проєкту:
+- **назва емулятора Android** з `emulator -list-avds`, наприклад `Pixel_8_API_35`;
+- **назва симулятора iPhone** з `xcrun simctl list devices available`, наприклад `iPhone 16`.
+
+Якщо якась команда пише `command not found`, дивись [Частину G](#частина-g-якщо-щось-не-працює).
+
+---
+
+## Частина C. Один раз на кожен проєкт
+
+### C1. Підготуй теку проєкту
+
+Структура може бути будь-яка. Головне, щоб усе було в одній теці (воркспейсі):
+
+```
+myapp/                    ← сюди заходиш і тут запускаєш claude
+├── backend/              ← або services/users, services/orders …
+├── web/                  ← сайт (якщо є)
+└── mobile/               ← React Native / Expo додаток (якщо є)
+```
+
+Кожна підтека може бути окремим git-репозиторієм або частиною одного спільного.
+
+**Новий проєкт:**
+```bash
+mkdir ~/projects/myapp && cd ~/projects/myapp
+git init
+# створи або склонуй сюди backend/, web/, mobile/ …
+git add -A && git commit -m "init"
+```
+
+**Існуючий проєкт:**
+```bash
+cd ~/projects/myapp
+git add -A && git commit -m "save before pipeline"
+```
+Пайплайн не стартує, якщо є незбережені зміни. Тому спершу закоміть.
+Якщо в підтеці окремий репозиторій, закоміть і там.
+
+### C2. Підключи проєкт до агентів
+
+```bash
+cd ~/projects/myapp
+claude
+```
+
+Всередині Claude напиши:
+- для сайту: `/pipeline-init-web`
+- для мобільного додатку: `/pipeline-init-mobile`
+- якщо є і сайт, і додаток, запусти обидві по черзі (друга доповнює, нічого не стирає).
+
+Що буде далі: Claude сам знайде сервіси, команди і порти, а потім покаже таблицю і поставить до 4 питань. Для мобільного він ще запитає або перевірить назви симулятора й емулятора з кроку B5. Після твого «ок» він створить:
+
+| Що | Навіщо |
+|---|---|
+| `.pipeline/workspace.json` | «паспорт» проєкту: які сервіси, де лежать, як перевіряти і деплоїти |
+| `docs/specs/_TEMPLATE.md` | шаблон ТЗ, за яким Оркестратор пише задачі |
+| `contracts/` | опис API між бекендом і клієнтами |
+| `e2e/` | веб-тести Playwright |
+| `e2e-mobile/` | мобільні сценарії Maestro |
+| рядки в `.gitignore` | щоб тимчасові файли пайплайну не потрапляли в git |
+
+### C3. Доустанови тестові інструменти проєкту
+
+**Для веб-тестів** (Claude запропонує те саме):
+```bash
+cd e2e
+npm init -y
+npm i -D @playwright/test typescript
+npx playwright install chromium
+cd ..
+```
+
+**Для мобільного** запусти smoke-тест: він доводить, що збірка, встановлення і Maestro працюють. `/pipeline-init-mobile` запропонує його в кінці, просто погодься. Перша збірка iOS може йти 10–20 хвилин, це нормально.
+
+### C4. Перевір і закоміть
+
+```bash
+node ~/.claude/pipeline/pipeline.mjs doctor
+git add -A && git commit -m "add claude team pipeline"
+```
+
+✅ У `doctor` біля кожного сервісу має бути `✔`. Попередження `no lint/typecheck/test` означають, що в сервісі немає таких npm-скриптів. Агенти працюватимуть, але перевірок буде менше. Варто їх додати.
+
+---
+
+## Частина D. Щоденна робота
+
+У теці проєкту запусти `claude` і пиши задачі так:
+
+```
+/feature Користувач може змінити email у профілі (веб і мобільний), з підтвердженням паролем
+```
+
+Агенти самі пройдуть етапи і писатимуть статус українською:
+
+```
+[1/6] план: docs/specs/change-email.md — сервіси users, web, mobile
+[2/6] розробка: users ✔ → web ✔, mobile ✔
+[3/6] безпека: BLOCK (1 high — немає rate limit) → виправлення 1/3
+[3/6] безпека: PASS
+[4/6] QA: веб PASS 4/4, мобільний PASS 4/4 (iOS + Android)
+[5/6] перевірка і коміт: users 1a2b3c4, web 5d6e7f8, mobile 9a0b1c2
+```
+
+**Пушиш ти сам**, коли переглянеш результат: `git push` у потрібних репозиторіях.
+
+| Команда | Що робить |
+|---|---|
+| `/feature <опис>` | нова задача від ТЗ до коміту |
+| `/pipeline-status` | що зараз у роботі, де зупинилось |
+| `/resume <назва-задачі>` | продовжити перервану задачу |
+| `/audit` | тільки перевірка безпеки поточних змін |
+| `/deploy <середовище> [задача]` | деплой за налаштуваннями (production — тільки після твого «так») |
+
+---
+
+## Частина E. Що де лежить і що куди вписувати
+
+### Файли на твоєму комп'ютері (не в проєкті)
+
+| Файл / тека | Що там | Чи треба редагувати |
+|---|---|---|
+| `~/dev/claude-team-kit/` | сам кіт (твій git-репо) | так, якщо хочеш змінити агентів чи правила; потім `git push` |
+| `~/.claude/agents/`, `commands/`, `pipeline/` | посилання на кіт | ❌ ні, їх створює `install.sh` |
+| `~/.claude/settings.json` | охоронець і дозволи Claude Code | зазвичай ні |
+| `~/.claude/CLAUDE.md` | твої загальні правила для Claude + блок «українською» | можна дописувати свої правила **поза** блоком `claude-team-kit` |
+| `~/.zshenv` | шляхи до Java, Android, Maestro | один раз (крок B4) |
+
+### Файли в проєкті
+
+| Файл | Хто створює | Що вписувати руками |
+|---|---|---|
+| `.pipeline/workspace.json` | `/pipeline-init-…` | виправляти, якщо Claude щось визначив не так (див. нижче) |
+| `<сервіс>/CLAUDE.md` | ти (необов'язково) | правила саме цього сервісу: бібліотеки, патерни, стиль |
+| `docs/specs/*.md` | Оркестратор | нічого, але можна читати і правити ТЗ |
+| `.pipeline/<задача>/` | пайплайн | нічого — звіти, diff, скріншоти тестів |
+
+### Головні поля `workspace.json`
+
+Повний приклад: `node ~/.claude/pipeline/pipeline.mjs template workspace`.
+
+**Мова і коментарі:**
 ```json
 "conventions": {
-  "comments": { "language": "uk", "level": "all", "enforce": true, "exclude": [] },
+  "replyLanguage": "uk",
+  "comments": { "language": "uk", "level": "all", "enforce": true },
   "extra": ["Усі суми зберігаємо в копійках (integer)."]
 }
 ```
+- `replyLanguage` — мова відповідей і статусів;
+- `comments.level`: `all` = коментар до кожної функції і змінної; `functions` = лише функції, класи і змінні верхнього рівня;
+- `extra` — будь-які правила проєкту, їх отримають усі агенти.
 
-- Кожен агент перед роботою читає `pipeline.mjs conventions`: JSDoc українською над кожною функцією, методом, класом, компонентом і хуком, плюс коментар біля кожної змінної.
-- Імена функцій, змінних і файлів лишаються англійською. Commit messages теж англійською.
-- **Перевірка автоматична.** Перший крок `verify` сканує всі нові рядки JS/TS/Vue/TSX. Функція чи змінна без коментаря або з коментарем не українською блокує коміт, а помилка повертається тому агенту, чий це файл.
-- Агент може перевірити себе сам: `node ~/.claude/pipeline/pipeline.mjs comments <task> <service>`.
-- `level: "functions"` — м'якший варіант: коментарі обов'язкові для функцій, класів, методів і змінних верхнього рівня, але не для кожної локальної змінної.
-- `extra` — будь-які додаткові правила проєкту; їх отримають усі агенти.
+**Сервіс (бекенд або веб):**
+```json
+{
+  "name": "users",
+  "type": "backend",
+  "path": "services/users",
+  "stack": "Node 20 + Express + TypeScript + PostgreSQL",
+  "commands": { "lint": "npm run lint", "typecheck": "npx tsc --noEmit", "test": "npx vitest run", "build": "npm run build" },
+  "dev": { "start": "npm run dev", "url": "http://localhost:3001/health" }
+}
+```
+- `type`: `frontend` (сайт), `mobile` (додаток), `backend`, `worker`, `library`, `infra`;
+- `commands` — як перевірити сервіс (виконується в його теці);
+- `dev` — як запустити його локально для тестів і за якою адресою перевірити, що він живий.
 
-Перевірка евристична, без повноцінного парсера. Вона ловить переважну більшість випадків, але дуже екзотичні конструкції може пропустити.
+**Мобільний додаток** — тут найчастіше треба вписати свої значення:
+```json
+{
+  "name": "mobile",
+  "type": "mobile",
+  "path": "mobile",
+  "commands": { "lint": "npm run lint", "typecheck": "npx tsc --noEmit", "test": "npx jest --ci" },
+  "mobile": {
+    "framework": "expo",
+    "platforms": ["ios", "android"],
+    "appId":  { "ios": "com.bohdan.myapp", "android": "com.bohdan.myapp" },
+    "device": { "ios": "iPhone 16", "android": "Pixel_8_API_35" },
+    "build": {
+      "ios": "npx expo run:ios --configuration Release --no-bundler --device \"{device}\"",
+      "android": "npx expo run:android --variant release --no-bundler"
+    }
+  }
+}
+```
+| Поле | Де взяти значення |
+|---|---|
+| `appId.ios` | `app.json` → `expo.ios.bundleIdentifier` |
+| `appId.android` | `app.json` → `expo.android.package` |
+| `device.ios` | точна назва з `xcrun simctl list devices available` |
+| `device.android` | точна назва з `emulator -list-avds` |
+| `build` | для Expo як вище; для «голого» RN: `npx react-native run-ios --mode Release --simulator "{device}" --no-packager` і `npx react-native run-android --mode release --no-packager` |
+| `platforms` | `["ios","android"]` на Mac, `["android"]` на Windows/Linux |
+
+**Деплой** (необов'язково):
+```json
+"deploy": {
+  "environments": {
+    "staging":     { "steps": [{ "name": "up", "cwd": "infra", "run": "docker compose up -d --build" }],
+                     "healthchecks": ["http://localhost:3000/health"],
+                     "rollback": [{ "name": "down", "cwd": "infra", "run": "docker compose down" }] },
+    "production":  { "requireApproval": true, "steps": [{ "run": "gh workflow run deploy.yml" }] },
+    "mobile-store":{ "requireApproval": true, "steps": [{ "cwd": "mobile", "run": "npx eas-cli build --profile production --platform all --non-interactive --auto-submit" }] }
+  }
+}
+```
+`requireApproval: true` означає, що деплой піде тільки після твого «так» у чаті і підтвердження команди.
 
 ---
 
-## 5. Мобільні додатки: QA на симуляторі
+## Частина F. Як усе влаштовано
 
-### Що поставити один раз
-| Що | Для чого | Як |
+### Команда агентів
+| Роль | Веб | Мобільний |
 |---|---|---|
-| Maestro | запуск сценаріїв | `curl -Ls "https://get.maestro.mobile.dev" \| bash` (агенту таку команду запускати заборонено, тому став сам) |
-| Java 17+ | потрібна Maestro | `brew install openjdk@17` або будь-який JDK |
-| Xcode + симулятор | iOS (**тільки macOS**) | Xcode → Settings → Platforms → iOS |
-| Android Studio + AVD | Android | Device Manager → створити емулятор; `adb` і `emulator` додати в PATH |
+| Оркестратор (головна сесія) | ТЗ, контракти, керує всіма | те саме |
+| Бекенд | `team-backend` | `team-backend` (той самий) |
+| Клієнт | `team-frontend` | `team-mobile` |
+| Безпека | `team-security` — бачить тільки diff | + мобільний чекліст |
+| Тести | `team-qa` — Playwright у браузері | `team-qa-mobile` — Maestro на симуляторі |
+| DevOps | `team-devops` — Docker, CI, коміти, деплой | + EAS build/submit |
 
-### Як проходить тест
-```
-team-qa-mobile пише e2e-mobile/<task>/AC-1.yaml, AC-2.yaml …
-        ↓
-pipeline.mjs sim <task>
-  • вмикає симулятор / емулятор (за назвою з маніфесту)
-  • піднімає бекенди з dev.start; на Android робить adb reverse, тож localhost працює
-  • збирає та встановлює додаток, ЛИШЕ якщо код змінився з останньої збірки
-  • запускає Maestro, збирає скріншоти й лог пристрою (JS-помилки, краші)
-  • зупиняє все, що запускав
-        ↓
-агент дивиться скріншоти (чи нічого не з'їхало, чи не сховано під клавіатурою)
-та лог → qa-mobile.json
-```
+### Етапи задачі
+1. **План.** Оркестратор пише ТЗ і контракти, створює гілки `feat/<задача>`.
+2. **Розробка.** Спершу бекенди, потім сайт і додаток (паралельно), потім інфраструктура.
+3. **Безпека.** Пентестер бачить **тільки** зміни коду, без ТЗ і переписки, тому оцінює неупереджено.
+4. **Тести.** Веб тестується в браузері. Мобільний на симуляторі: скрипт вмикає симулятор, піднімає бекенди, збирає додаток (тільки якщо код змінився), проганяє сценарії і робить скріншоти. Агент переглядає скріншоти і лог.
+5. **Перевірка і коміт.** Спершу коментарі українською, потім lint → typecheck → test → build, і коміт у кожному репозиторії.
+6. **Деплой.** Тільки якщо ти попросив.
 
-Коміт заблокований, доки `qa-mobile.json` і кожен `sim-<platform>.json` не мають статусу PASS.
+### Що гарантує скрипт (а не обіцянка агента)
+- Коміт можливий тільки після PASS безпеки, тестів і перевірки.
+- Якщо код змінився після перевірок, коміт відхиляється.
+- Функція чи змінна без коментаря українською не пройде перевірку.
+- `.env`, ключі (`*.pem`, `*.key`, `*.p12`) і файли понад 1 MB не комітяться.
+- Максимум 3 спроби виправлення, далі відкат через `git stash` (роботу можна відновити).
+- `git push`, `reset --hard`, `git clean`, читання `.env` і `curl | sh` заблоковані (тільки в теках з `.pipeline/workspace.json`).
+- Production-деплой можливий тільки після твого підтвердження.
 
-- Елементи шукаються за `testID`, тому `team-mobile` ставить його на все, що згадано в ТЗ.
-- Збірки за замовчуванням Release з вбудованим JS-бандлом: тести не залежать від Metro і стабільніші. Мінус у тому, що після зміни коду збірка займає кілька хвилин.
-- **Неможливе на симуляторі** (push-сповіщення, камера, покупки, справжня біометрія) агент позначає як `manual`, а не «проходить» вигадано.
-- Перед першою фічею `/pipeline-init-mobile` запропонує smoke-тест: зібрати додаток, відкрити і зробити скріншот. Так видно, що вся ланцюжка працює.
+### Чесно про обмеження
+- Те, що агент пише тільки «у свою» теку, тримається на інструкції. Порушення видно в diff.
+- Перевірка коментарів спрощена: більшість випадків ловить, але дуже нестандартний код може пропустити.
+- iOS-симулятор працює тільки на Mac.
+- Push-сповіщення, камера, покупки й біометрія на симуляторі не тестуються: агент позначає їх як `manual`.
+- Великі задачі (diff понад 3000 рядків) дорожчі й менш точні, краще ділити.
 
 ---
 
-## 6. Як проходить задача
+## Частина G. Якщо щось не працює
 
-```
-/feature <опис>
-  1 PLAN     Оркестратор: ТЗ + контракти, гілки feat/<id> у зачеплених репо
-  2 BUILD    team-backend × N → team-frontend / team-mobile (паралельно) → team-devops infra
-  3 SECURITY team-security бачить ТІЛЬКИ diff → PASS / BLOCK
-  4 QA       team-qa (веб) і/або team-qa-mobile (симулятор)
-  5 RELEASE  verify: коментарі → lint → typecheck → test → build; коміт у кожному репо
-  6 DEPLOY   за запитом: кроки з маніфесту + healthchecks + авто-rollback
-```
+| Симптом | Що зробити |
+|---|---|
+| `/agents` не показує `team-…` | `cd ~/dev/claude-team-kit && bash install.sh --link`, потім перезапусти Claude Code |
+| `ls -la ~/.claude/agents` показує червоні / зламані посилання | ти перемістив теку кіта. Поверни її в `~/dev/claude-team-kit` або перевстанови звідти, де вона зараз |
+| `java: command not found` або Maestro скаржиться на Java | перевір шлях: `ls "/Applications/Android Studio.app/Contents/jbr/Contents/Home"`. Якщо такої теки немає, виправ `JAVA_HOME` у `~/.zshenv` на свій шлях |
+| `adb` / `emulator: command not found` | перевір, що SDK є: `ls ~/Library/Android/sdk`. Якщо SDK в іншому місці (Android Studio → Settings → Android SDK → *Android SDK Location*), впиши цей шлях в `ANDROID_HOME` у `~/.zshenv` |
+| `maestro: command not found` | `ls ~/.maestro/bin`. Якщо порожньо, повтори крок B3 |
+| Змінив `~/.zshenv`, а нічого не змінилось | закрий **усі** вікна терміналу й Claude Code та відкрий заново (або `source ~/.zshenv`) |
+| `iOS simulator "…" not found` | впиши в `workspace.json` → `mobile.device.ios` точну назву з `xcrun simctl list devices available` |
+| `AVD "…" not found` | впиши в `mobile.device.android` точну назву з `emulator -list-avds` |
+| Збірка iOS падає на CocoaPods | `brew install cocoapods`, потім у теці додатку `npx pod-install` |
+| Додаток на емуляторі не бачить бекенд | в додатку адреса API має бути `http://localhost:<порт>` (скрипт сам прокидає порти в Android). Перевір, що вона не захардкоджена на віддалений сервер |
+| `has uncommitted changes` при старті задачі | закоміть або сховай (`git stash`) зміни в тому репозиторії, який названо |
+| `Commit refused` | прочитай причину: зазвичай треба повторити етап, який там названо. Оркестратор робить це сам |
+| Хочеш повністю прибрати кіт | `cd ~/dev/claude-team-kit && bash uninstall.sh` (файли проєктів не зачіпаються) |
 
-Що гарантує скрипт, а не обіцянка агента:
-- коміт можливий лише після PASS аудиту, QA і verify;
-- якщо код змінився після перевірок, коміт відхиляється;
-- `.env`, ключі (`*.pem`, `*.key`, `*.p12`) і файли понад 1 MB не комітяться;
-- максимум 3 цикли виправлень, далі відкат через `git stash` (роботу можна відновити);
-- production-деплой і `mobile-store` вимагають твого «так»;
-- `git push`, `reset --hard`, `git clean`, читання `.env` і `curl | sh` заблоковані. Це діє **лише** в папках із `.pipeline/workspace.json`.
+Загальна діагностика: `node ~/.claude/pipeline/pipeline.mjs doctor`. Запускай у теці проєкту, і він покаже, що саме не так.
 
-Корисне:
+---
+
+## Частина H. Усі команди
+
+Команди бувають трьох видів:
+1. **Слеш-команди**: пишеш у чаті Claude Code (`/feature …`). Це основний спосіб роботи.
+2. **Команди двигуна** `pipeline.mjs`: виконуються в терміналі. Здебільшого їх запускають самі агенти, але ти теж можеш, щоб щось перевірити.
+3. **Скрипти встановлення**: `install.sh` / `uninstall.sh`.
+
+### H1. Слеш-команди (у чаті Claude Code)
+
+| Команда | Коли використовувати | Приклад |
+|---|---|---|
+| `/pipeline-init-web` | один раз на проєкт: підключити сайт, бекенди, інфраструктуру | `/pipeline-init-web` |
+| `/pipeline-init-mobile` | один раз на проєкт: підключити React Native / Expo додаток і тести на симуляторі | `/pipeline-init-mobile` |
+| `/feature <опис>` | нова задача: ТЗ → код → безпека → тести → коміт | `/feature Додати зміну email у профілі` |
+| `/feature <опис> + деплой` | те саме, але з деплоєм у кінці (якщо деплой налаштований) | `/feature Виправити помилку логіну, задеплой на staging` |
+| `/resume <задача>` | продовжити задачу, якщо сесія перервалась чи ти закрив Claude | `/resume change-email` |
+| `/pipeline-status` | подивитись усі задачі: етап, статус, скільки було виправлень | `/pipeline-status` |
+| `/audit` | перевірити безпеку **поточних незакомічених** змін (без пайплайну) | `/audit` |
+| `/audit <задача>` | повторно перевірити безпеку конкретної задачі | `/audit change-email` |
+| `/deploy <середовище>` | задеплоїти поточний стан | `/deploy staging` |
+| `/deploy <середовище> <задача>` | задеплоїти закомічену задачу | `/deploy production change-email` |
+| `/agents` | вбудована команда Claude Code: показати агентів (мають бути 7 `team-…`) | `/agents` |
+
+Назву задачі (`change-email`) Оркестратор придумує сам на першому етапі й показує в статусі `[1/6] план: …`.
+
+### H2. Команди двигуна (у терміналі)
+
+Скорочення: замість довгого `node ~/.claude/pipeline/pipeline.mjs` нижче написано `pl`.
+Можна зробити собі такий псевдонім: додай у `~/.zshenv` рядок
+`alias pl="node ~/.claude/pipeline/pipeline.mjs"` і перезапусти термінал.
+Агенти завжди пишуть повну форму: від неї залежать дозволи.
+
+Запускати **в теці проєкту** (крім `help`, `doctor`, `template`, `rules`, `conventions`, які працюють будь-де).
+
+**Довідка і перевірка**
+| Команда | Що робить |
+|---|---|
+| `pl help` | короткий список усіх команд |
+| `pl doctor` | перевіряє встановлення кіта, сервіси проєкту, Java / Android / Xcode / Maestro, симулятори |
+| `pl services` | таблиця сервісів: тип, тека, стек, який агент відповідає |
+| `pl services --type mobile` | тільки сервіси певного типу (`frontend`, `mobile`, `backend`, …) |
+| `pl services --json` | те саме у форматі JSON (так читають агенти) |
+| `pl status` | усі задачі: етап, статус, вердикти безпеки, QA, перевірки |
+| `pl rules` | правила Оркестратора (як він веде задачу) |
+| `pl conventions` | правила коду для агентів: мова коментарів, мова звітів, `extra` з маніфесту |
+| `pl template workspace` | повний приклад `workspace.json` з усіма полями |
+| `pl template spec` | шаблон ТЗ |
+| `pl template playwright` | конфіг Playwright для веб-тестів |
+| `pl template mobile-flow` | приклад сценарію Maestro |
+| `pl scaffold` | створює `docs/specs/`, `contracts/`, `e2e/`, `e2e-mobile/`, рядки в `.gitignore` (init робить це сам) |
+
+**Перебіг задачі** (зазвичай запускають агенти)
+| Команда | Що робить |
+|---|---|
+| `pl start <задача> <сервіси>` | створює гілку `feat/<задача>` у всіх зачеплених репозиторіях. Приклад: `pl start change-email users,web,mobile` або `all` |
+| `pl start <задача> <сервіси> --no-qa` | те саме, але без етапу тестів (коли нема чого тестувати користувацьки) |
+| `pl start … --allow-dirty` | дозволити старт з незакоміченими змінами (вони потраплять у задачу) |
+| `pl diff <задача>` | готує diff для сліпого аудиту безпеки → `.pipeline/<задача>/diff.patch` |
+| `pl diff adhoc` | diff поточних незакомічених змін у всіх репозиторіях (для `/audit`) |
+| `pl owner <файл…>` | який агент відповідає за файл. Приклад: `pl owner services/users/src/a.ts` |
+| `pl owner --file .pipeline/<задача>/changed_files.txt` | розкласти всі змінені файли по агентах |
+| `pl comments <задача>` | перевірити, що всі нові функції і змінні мають коментар українською |
+| `pl comments <задача> <сервіс>` | те саме тільки для одного сервісу |
+| `pl verify <задача>` | коментарі → lint → typecheck → test → build для кожного сервісу задачі |
+| `pl verify <задача> <сервіс,сервіс>` | те саме тільки для вказаних сервісів |
+| `pl sim <задача>` | мобільні тести: вмикає симулятор/емулятор, піднімає бекенди, збирає додаток (якщо треба), запускає Maestro, збирає скріншоти й логи |
+| `pl sim <задача> --platform ios` | тільки iOS (`android` — тільки Android, `all` — обидві) |
+| `pl sim <задача> --rebuild` | примусово перезібрати додаток |
+| `pl sim <задача> --skip-build` | не збирати, використати вже встановлений додаток |
+| `pl sim <задача> --service <додаток>` | якщо в проєкті кілька мобільних додатків |
+| `pl mark <задача> stage=3 status=BLOCKED note="…"` | оновити стан задачі (`IN_PROGRESS`, `BLOCKED`, `DONE`, `FAILED`) |
+| `pl mark <задача> loop=security` | порахувати спробу виправлення; після 3-ї повертає код 3 (стоп) |
+| `pl commit <задача> -m "feat(scope): опис"` | коміт у кожному репозиторії, **тільки** якщо безпека, тести і перевірка пройдені. Нічого не пушить |
+| `pl rollback <задача>` | відкат: ховає зміни в `git stash` і повертає репозиторії на попередні гілки (роботу можна відновити) |
+
+**Деплой**
+| Команда | Що робить |
+|---|---|
+| `pl deploy <середовище>` | виконує кроки з `deploy.environments.<середовище>` + healthchecks; при помилці — кроки `rollback` |
+| `pl deploy <середовище> --task <задача>` | деплой конкретної закоміченої задачі |
+| `pl deploy <середовище> --approved` | для середовищ з `requireApproval: true` (production, mobile-store). Claude Code ще раз спитає підтвердження |
+
+**Службові** (їх викликає `install.sh` / `uninstall.sh`, вручну не потрібно)
+| Команда | Що робить |
+|---|---|
+| `pl guard` | охоронець, якого Claude Code викликає перед кожною shell-командою |
+| `pl install-hook` / `pl uninstall-hook` | додати/прибрати охоронця й дозволи в `~/.claude/settings.json` |
+| `pl install-memory` / `pl uninstall-memory` | додати/прибрати блок «відповідай українською» в `~/.claude/CLAUDE.md` |
+
+### H3. Скрипти встановлення
+
+| Команда | Що робить |
+|---|---|
+| `bash install.sh --link` | встановити або оновити кіт посиланнями (рекомендовано: зміни в `~/dev/claude-team-kit` діють одразу) |
+| `bash install.sh` | встановити копіями (тоді після кожної зміни кіта треба запускати знову) |
+| `bash uninstall.sh` | повністю прибрати кіт з `~/.claude`; файли проєктів не зачіпаються |
+
+Запускаються з теки кіта: `cd ~/dev/claude-team-kit`.
+
+### H4. Найчастіші сценарії
+
 ```bash
-node ~/.claude/pipeline/pipeline.mjs status       # стан задач
-node ~/.claude/pipeline/pipeline.mjs services     # сервіси і хто за них відповідає
-node ~/.claude/pipeline/pipeline.mjs doctor       # перевірка інструментів, симуляторів, маніфесту
-node ~/.claude/pipeline/pipeline.mjs template workspace   # повний приклад маніфесту
-node ~/.claude/pipeline/pipeline.mjs help
+# Оновити кіт після змін у репозиторії
+cd ~/dev/claude-team-kit && git pull && bash install.sh --link
+
+# Перевірити, чи все гаразд у проєкті
+cd ~/projects/myapp && node ~/.claude/pipeline/pipeline.mjs doctor
+
+# Подивитись стан усіх задач
+node ~/.claude/pipeline/pipeline.mjs status
+
+# Самому прогнати мобільні тести задачі тільки на Android
+node ~/.claude/pipeline/pipeline.mjs sim change-email --platform android
+
+# Відновити роботу після відкату
+git checkout feat/change-email && git stash list
+git stash pop stash@{0}        # номер з попередньої команди
 ```
-
----
-
-## 7. Чесно про обмеження
-- Те, що агент пише лише у свою папку, тримається на інструкції, а не на пісочниці. Порушення видно в diff і в `owner`. Критичні речі захищені скриптом.
-- iOS-симулятор працює тільки на Mac. На Windows/Linux тестується тільки Android, а iOS пропускається з попередженням.
-- Деплой виконує лише ті кроки, які ти прописав у `deploy.environments`: docker compose, `gh workflow run`, `eas build/submit`…
-- Перша мобільна збірка йде довго (10–20 хв для iOS). Далі збірка перевикористовується, поки код додатку не зміниться.
-- Великі задачі (diff понад 3000 рядків) дорогі й менш точні: краще ділити.
-
-## 8. Як розвивати
-Правиш агента чи правило в `~/dev/claude-team-kit`, і зміна діє в усіх проєктах (з `--link`).
-Правила конкретного проєкту чи сервісу клади в його `CLAUDE.md` або в `conventions.extra`, а не в кіт.

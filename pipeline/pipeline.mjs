@@ -1132,7 +1132,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   owner <files..> | --file f     which agent owns these files
   verify <id> [svc,..]           comments + lint/typecheck/test/build per service → verify.json
   comments <id> [svc,..]         check that new functions/variables have comments in the workspace language
-  sim <id> [--platform ios|android|all] [--rebuild] [--skip-build]
+  sim <id> [--platform ios|android|all] [--service app] [--rebuild] [--skip-build]
                                  boot simulator, build/install app, start backends, run Maestro flows
   mark <id> stage=N status=S [loop=name] [note=..]   update task state; exit 3 at loop limit
   commit <id> -m "feat(x): .."   gated commit in every affected repo (no push)
@@ -1142,7 +1142,8 @@ const HELP = `Claude Team Kit — ${PL} <command>
   scaffold | doctor              set up / check the workspace
   template <workspace|spec|playwright|mobile-flow>
   guard                          PreToolUse hook (reads JSON on stdin)
-  install-hook | uninstall-hook  used by install.sh / uninstall.sh`;
+  install-hook | uninstall-hook      used by install.sh / uninstall.sh
+  install-memory | uninstall-memory  add/remove the language block in ~/.claude/CLAUDE.md`;
 
 const COMMANDS = {
   rules: () => {
