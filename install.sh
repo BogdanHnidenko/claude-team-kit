@@ -43,10 +43,6 @@ for d in agents commands; do
     fi
   done
 done
-for legacy in pipeline-init.md; do
-  f="$DEST/commands/$legacy"
-  if [ -f "$f" ] && [ ! -e "$KIT/commands/$legacy" ] && grep -q "team pipeline" "$f"; then rm -f "$f"; echo "  removed old command /${legacy%.md}"; fi
-done
 for f in "$KIT"/agents/*.md;   do place "$f" "$DEST/agents/$(basename "$f")";   echo "  agent    $(basename "$f" .md)"; done
 for f in "$KIT"/commands/*.md; do place "$f" "$DEST/commands/$(basename "$f")"; echo "  command  /$(basename "$f" .md)"; done
 place "$KIT/pipeline" "$DEST/pipeline"
@@ -59,7 +55,7 @@ cat <<EOF
 
 ✔ Done. In any project:
   1. cd <workspace root>  &&  claude
-  2. /pipeline-init-web  or  /pipeline-init-mobile   (both, for web + mobile)
+  2. /pipeline-init   (scans everything; or /pipeline-init-web, /pipeline-init-mobile)
   3. /feature <what to build>
 
 Check the install anytime:  node ~/.claude/pipeline/pipeline.mjs doctor

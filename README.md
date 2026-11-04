@@ -12,6 +12,7 @@
 - [Частина F. Як усе влаштовано](#частина-f-як-усе-влаштовано)
 - [Частина G. Якщо щось не працює](#частина-g-якщо-щось-не-працює)
 - [Частина H. Усі команди](#частина-h-усі-команди) — повний довідник
+- [Частина I. Один проєкт із підпроєктами (git submodules)](#частина-i-один-проєкт-із-підпроєктами-git-submodules) — web, mobile, backend зі своєю історією всередині одного проєкту
 
 ### Дві речі, які варто знати перед стартом
 - **`~`** — це твоя домашня тека. На Mac це `/Users/<твоє-імʼя>`, наприклад `/Users/bohdanhnidenko`. Тобто `~/.zshenv` = `/Users/bohdanhnidenko/.zshenv`.
@@ -205,12 +206,17 @@ cd ~/projects/myapp
 claude
 ```
 
-Всередині Claude напиши:
-- для сайту: `/pipeline-init-web`
-- для мобільного додатку: `/pipeline-init-mobile`
-- якщо є і сайт, і додаток, запусти обидві по черзі (друга доповнює, нічого не стирає).
+Всередині Claude напиши **одну** команду:
 
-Що буде далі: Claude сам знайде сервіси, команди і порти, а потім покаже таблицю і поставить до 4 питань. Для мобільного він ще запитає або перевірить назви симулятора й емулятора з кроку B5. Після твого «ок» він створить:
+```
+/pipeline-init
+```
+
+Вона універсальна: сама проходить по всіх папках і знаходить сайти, мобільні додатки, бекенди, воркери, інфраструктуру й сабмодулі. Потім **зв'язує проєкти між собою** (хто кого викликає) і кожному налаштовує власне тестування.
+
+Якщо хочеш налаштувати тільки одну частину, є вузькі варіанти: `/pipeline-init-web` (лише сайт + бекенди) і `/pipeline-init-mobile` (лише додаток + бекенди). Будь-яку з команд можна запускати повторно: вона доповнює маніфест і нічого не стирає.
+
+Що буде далі: Claude покаже таблицю сервісів, **схему зв'язків** (наприклад `mobile → api`, `web → api`) і що треба перевірити, а також поставить до 4 питань. Для мобільного він ще перевірить назви симулятора й емулятора з кроку B5. Після твого «ок» він створить:
 
 | Що | Навіщо |
 |---|---|
@@ -326,7 +332,32 @@ git add -A && git commit -m "add claude team pipeline"
 ```
 - `type`: `frontend` (сайт), `mobile` (додаток), `backend`, `worker`, `library`, `infra`;
 - `commands` — як перевірити сервіс (виконується в його теці);
-- `dev` — як запустити його локально для тестів і за якою адресою перевірити, що він живий.
+- `dev` — як запустити його локально для тестів і за якою адресою перевірити, що він живий;
+- `dependsOn` — **зв'язки**: від яких сервісів цей залежить (кого він викликає). Приклад для додатку: `"dependsOn": ["api"]`.
+
+**Зв'язки між проєктами (`dependsOn`)**
+
+`/pipeline-init` знаходить їх сам, тобі лишається перевірити:
+- за адресами в конфігах: якщо в `mobile/.env.example` є `http://localhost:4000`, а бекенд працює на `4000`, то `mobile → api`;
+- за назвами змінних: `USERS_SERVICE_URL` означає зв'язок із сервісом `users`;
+- за `depends_on` у `docker-compose.yml`.
+
+Навіщо вони потрібні:
+| Де | Що дають |
+|---|---|
+| План задачі | змінюється API бекенду → оркестратор бачить, які клієнти теж треба оновити |
+| Порядок розробки | спершу той, хто надає API, потім ті, хто його використовує; незалежні — паралельно |
+| Тести | веб-тести піднімають сайт і лише його бекенди; мобільні — лише бекенди додатку |
+
+Подивитись: `pl services` → колонки **uses** і **used by**.
+
+**Тестування кожного проєкту**
+| Тип | Своє тестування |
+|---|---|
+| усі | `commands`: lint, typecheck, test, build — у своїй теці під час verify |
+| `frontend` (сайт) | + Playwright у браузері (`e2e/`, агент `team-qa`) |
+| `mobile` | + Maestro на iOS-симуляторі й Android-емуляторі (`e2e-mobile/`, агент `team-qa-mobile`) |
+| `backend` / `worker` | + API-тести (`team-qa`) і перевірка через клієнтів, які від нього залежать |
 
 **Мобільний додаток** — тут найчастіше треба вписати свої значення:
 ```json
@@ -443,7 +474,8 @@ git add -A && git commit -m "add claude team pipeline"
 
 | Команда | Коли використовувати | Приклад |
 |---|---|---|
-| `/pipeline-init-web` | один раз на проєкт: підключити сайт, бекенди, інфраструктуру | `/pipeline-init-web` |
+| `/pipeline-init` | один раз на проєкт: **сам знаходить усе** (сайт, мобільний, бекенди, воркери, інфра, сабмодулі), зв'язує проєкти і налаштовує кожному тестування | `/pipeline-init` |
+| `/pipeline-init-web` | підключити лише сайт + бекенди + інфраструктуру | `/pipeline-init-web` |
 | `/pipeline-init-mobile` | один раз на проєкт: підключити React Native / Expo додаток і тести на симуляторі | `/pipeline-init-mobile` |
 | `/feature <опис>` | нова задача: ТЗ → код → безпека → тести → коміт | `/feature Додати зміну email у профілі` |
 | `/feature <опис> + деплой` | те саме, але з деплоєм у кінці (якщо деплой налаштований) | `/feature Виправити помилку логіну, задеплой на staging` |
@@ -471,7 +503,9 @@ git add -A && git commit -m "add claude team pipeline"
 |---|---|
 | `pl help` | короткий список усіх команд |
 | `pl doctor` | перевіряє встановлення кіта, сервіси проєкту, Java / Android / Xcode / Maestro, симулятори |
-| `pl services` | таблиця сервісів: тип, тека, стек, який агент відповідає |
+| `pl detect` | просканувати папки: які проєкти є, їх тип, git/сабмодулі, команди перевірки, порти, **зв'язки між проєктами**, що треба доповнити. Нічого не змінює |
+| `pl detect --json` | те саме у вигляді готової пропозиції `workspace.json` (так читає `/pipeline-init`) |
+| `pl services` | таблиця сервісів: тип, тека, кого використовує (**uses**), хто використовує його (**used by**), який агент відповідає |
 | `pl services --type mobile` | тільки сервіси певного типу (`frontend`, `mobile`, `backend`, …) |
 | `pl services --json` | те саме у форматі JSON (так читають агенти) |
 | `pl status` | усі задачі: етап, статус, вердикти безпеки, QA, перевірки |
@@ -550,3 +584,145 @@ node ~/.claude/pipeline/pipeline.mjs sim change-email --platform android
 git checkout feat/change-email && git stash list
 git stash pop stash@{0}        # номер з попередньої команди
 ```
+
+---
+
+## Частина I. Один проєкт із підпроєктами (git submodules)
+
+Мета: один «головний» репозиторій (наприклад, `fieldQuote`), а всередині нього підпроєкти `fieldQuote-web`, `fieldQuote-mobile`, `fieldQuote-backend`. У **кожного підпроєкту** своя історія, гілки і push, а весь проєкт скачується однією командою.
+
+Для цього в git є **сабмодулі**: головний репозиторій зберігає посилання на інші репозиторії і пам'ятає, яка версія кожного з них іде в комплекті.
+
+```
+fieldQuote/                    ← головний репо (github.com/<ти>/fieldQuote)
+├── .gitmodules                ← список підпроєктів і їх адрес (git створює сам)
+├── .pipeline/workspace.json
+├── docs/specs/  contracts/  e2e/  e2e-mobile/
+├── fieldQuote-web/            ← окремий репо (github.com/<ти>/fieldQuote-web)
+├── fieldQuote-mobile/         ← окремий репо (github.com/<ти>/fieldQuote-mobile)
+└── fieldQuote-backend/        ← окремий репо (github.com/<ти>/fieldQuote-backend)
+```
+
+### I1. Створи репозиторії на GitHub
+
+На github.com → **New repository**:
+- `fieldQuote` — головний;
+- `fieldQuote-web`, `fieldQuote-backend` — нові підпроєкти. **Постав галочку «Add a README file»**: порожній репозиторій не можна додати як сабмодуль.
+- `fieldQuote-mobile` — якщо він уже є, нічого не створюй.
+
+### I2. Збери головний проєкт
+
+```bash
+cd ~/projects
+git clone https://github.com/<ти>/fieldQuote.git
+cd fieldQuote
+
+# додаємо підпроєкти: адреса репозиторію + назва папки
+git submodule add https://github.com/<ти>/fieldQuote-mobile.git  fieldQuote-mobile
+git submodule add https://github.com/<ти>/fieldQuote-web.git     fieldQuote-web
+git submodule add https://github.com/<ти>/fieldQuote-backend.git fieldQuote-backend
+
+git commit -m "add subprojects"
+git push
+```
+
+Якщо в тебе вже є локальна папка мобільного додатку з незапушеними змінами, спершу запуш її у `fieldQuote-mobile` (`git push`), а потім додавай сабмодуль за адресою з GitHub.
+
+### I3. Підключи кіт
+
+```bash
+cd ~/projects/fieldQuote
+claude
+```
+
+```
+/pipeline-init-mobile
+/pipeline-init-web
+```
+
+Потім:
+
+```bash
+git add -A && git commit -m "add claude team pipeline" && git push
+```
+
+У `workspace.json` підпроєкти будуть прописані як `"path": "fieldQuote-mobile"`, `"path": "fieldQuote-web"`, `"path": "fieldQuote-backend"`.
+
+### I4. Скачати весь проєкт (на іншому ПК чи заново)
+
+```bash
+git clone --recurse-submodules https://github.com/<ти>/fieldQuote.git
+cd fieldQuote
+git submodule foreach 'git checkout main'
+```
+
+⚠️ Остання команда важлива. Після клонування підпроєкти стоять не на гілці, а на конкретному коміті (стан «detached HEAD»). Ця команда перемикає кожен підпроєкт на `main`, щоб можна було нормально працювати і пушити.
+
+### I5. Працювати з одним підпроєктом окремо
+
+Кожна папка-підпроєкт є звичайним git-репозиторієм:
+
+```bash
+cd fieldQuote-backend
+git checkout -b fix/login
+# … зміни …
+git add -A && git commit -m "fix: login"
+git push origin fix/login          # пушиться ТІЛЬКИ бекенд
+```
+
+Головний репозиторій при цьому побачить, що бекенд змінився (`git status` у `fieldQuote` покаже `modified: fieldQuote-backend (new commits)`). Якщо хочеш зафіксувати «ця версія бекенду йде в комплекті»:
+
+```bash
+cd ~/projects/fieldQuote
+git add fieldQuote-backend && git commit -m "bump backend" && git push
+```
+
+Це необов'язково робити щоразу, а лише тоді, коли хочеш зберегти узгоджений стан усього проєкту.
+
+### I6. Через `/feature` усе робиться саме
+
+Коли оркестратор виконує задачу, яка зачіпає кілька підпроєктів:
+1. створює гілку `feat/<задача>` у кожному зачепленому підпроєкті й у головному репо;
+2. агенти пишуть код у своїх підпроєктах;
+3. на коміті робить **окремий коміт у кожному підпроєкті**, а потім **коміт у головному**, який оновлює посилання на нові версії підпроєктів (разом із ТЗ і тестами).
+
+Пушиш потім одним із способів:
+
+```bash
+# все разом: спершу підпроєкти, потім головний
+cd ~/projects/fieldQuote
+git push --recurse-submodules=on-demand origin feat/<задача>
+
+# або кожен окремо
+cd fieldQuote-backend && git push origin feat/<задача>
+cd ../fieldQuote-web  && git push origin feat/<задача>
+```
+
+### I7. Оновити все з GitHub
+
+```bash
+cd ~/projects/fieldQuote
+git pull
+git submodule update --init --recursive            # підтягнути версії, записані в головному
+git submodule foreach 'git checkout main && git pull'   # або взяти найсвіжіші main кожного підпроєкту
+```
+
+### I8. Додати новий підпроєкт пізніше
+
+```bash
+cd ~/projects/fieldQuote
+git submodule add https://github.com/<ти>/fieldQuote-notifications.git fieldQuote-notifications
+git commit -m "add notifications service" && git push
+claude      # → /pipeline-init-web (або -mobile) — допише новий сервіс у workspace.json
+```
+
+### Шпаргалка
+
+| Хочу | Команда |
+|---|---|
+| Скачати все | `git clone --recurse-submodules <url>` → `git submodule foreach 'git checkout main'` |
+| Запушити тільки один підпроєкт | `cd fieldQuote-web && git push` |
+| Запушити все разом | у головному: `git push --recurse-submodules=on-demand` |
+| Зафіксувати версії підпроєктів у головному | `git add fieldQuote-web fieldQuote-backend && git commit -m "bump"` |
+| Оновити все | `git pull && git submodule update --init --recursive` |
+| Подивитись стан усіх підпроєктів | `git submodule status` або `git submodule foreach git status -s` |

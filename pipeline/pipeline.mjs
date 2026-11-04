@@ -31,7 +31,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['rules', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'mark', 'template', 'doctor']
+const SAFE_ALLOW = ['rules', 'detect', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'mark', 'template', 'doctor']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -116,6 +116,9 @@ function validate(ws, root) {
       }
     }
   }
+  for (const s of ws.services) {
+    for (const d of s.dependsOn ?? []) if (!names.has(d)) e.push(`service "${s.name}": dependsOn "${d}" is not a known service`);
+  }
   for (const [env, cfg] of Object.entries(ws.deploy?.environments ?? {})) {
     if (!Array.isArray(cfg.steps) || !cfg.steps.length) e.push(`deploy.environments.${env}.steps must be a non-empty array`);
   }
@@ -129,6 +132,13 @@ function loadWorkspace(cwd = process.cwd()) {
   if (errors.length) die(`workspace.json is invalid:\n  - ${errors.join('\n  - ')}`);
   return { root, ws };
 }
+// All services a service needs at runtime (transitively, via dependsOn).
+function dependencyClosure(ws, names) {
+  const out = new Set(); const stack = [...names];
+  while (stack.length) { const n = stack.pop(); for (const d of ws.services.find((s) => s.name === n)?.dependsOn ?? []) if (!out.has(d)) { out.add(d); stack.push(d); } }
+  return [...out];
+}
+const usedBy = (ws, name) => ws.services.filter((s) => (s.dependsOn ?? []).includes(name)).map((s) => s.name);
 function getService(ws, name) {
   return ws.services.find((s) => s.name === name)
     ?? die(`Unknown service "${name}". Known: ${ws.services.map((s) => s.name).join(', ')}`);
@@ -172,6 +182,12 @@ function allRepoRoots(root, ws) {
     if (info) set.add(info.root);
   }
   return [...set];
+}
+// Paths registered as git submodules of a repo (from .gitmodules).
+function submodulePaths(repoRoot) {
+  if (!fs.existsSync(path.join(repoRoot, '.gitmodules'))) return [];
+  const r = git(repoRoot, ['config', '-f', '.gitmodules', '--get-regexp', String.raw`^submodule\..*\.path$`], { allowFail: true });
+  return r.status === 0 ? r.stdout.trim().split('\n').filter(Boolean).map((l) => cleanPath(l.split(/\s+/).slice(1).join(' '))) : [];
 }
 // Pathspec for "this repo, minus .pipeline and minus nested repos".
 // Nested repos already in .gitignore need no exclude (git refuses pathspecs naming ignored paths).
@@ -428,7 +444,14 @@ function cmdCommit({ pos, flags }) {
   }
   const commits = [];
   for (const r of st.repos) {
-    const files = staged.get(r.root);
+    let files = staged.get(r.root);
+    // Parent repo with submodules: record the new commits of the sub-repos of this task.
+    const bumped = submodulePaths(r.root).filter((p) => st.repos.some((o) => o !== r && o.root === path.join(r.root, p) && commits.some((c) => c.repo === label(o))));
+    if (bumped.length) {
+      git(r.root, ['add', '--', ...bumped]);
+      files = gitOut(r.root, ['diff', '--cached', '--name-only']).split('\n').filter(Boolean);
+      log(`  ${label(r)}: updating submodule pointers → ${bumped.join(', ')}`);
+    }
     if (!files.length) { log(`  ${label(r)}: nothing to commit`); continue; }
     const c = git(r.root, ['commit', '-q', '-F', '-'], { input: `${msg}\n\nTask: ${id}\n`, allowFail: true });
     if (c.status !== 0) {
@@ -516,7 +539,7 @@ function cmdServices({ flags }) {
   if (flags.type) list = list.filter((s) => s.type === flags.type);
   if (flags.json) return log(JSON.stringify({ root: posix(root), contracts: ws.contracts ?? null, e2e: ws.e2e ?? null, e2eMobile: ws.e2eMobile ?? null, conventions: ws.conventions ?? null, services: list }, null, 2));
   log(`workspace: ${ws.name ?? path.basename(root)}  (${posix(root)})`);
-  table(['service', 'type', 'path', 'stack', 'agent'], list.map((s) => [s.name, s.type, s.path, s.stack ?? '', agentFor(s.type)]));
+  table(['service', 'type', 'path', 'uses', 'used by', 'agent'], list.map((s) => [s.name, s.type, s.path, (s.dependsOn ?? []).join(',') || '—', usedBy(ws, s.name).join(',') || '—', agentFor(s.type)]));
   if (ws.contracts?.path) log(`contracts: ${ws.contracts.path}${ws.contracts.codegen ? `  (codegen: ${ws.contracts.codegen})` : ''}`);
   if (ws.e2e?.path) log(`e2e web: ${ws.e2e.path}  (Playwright → team-qa)`);
   if (ws.e2eMobile?.path) log(`e2e mobile: ${ws.e2eMobile.path}  (Maestro on simulators → team-qa-mobile)`);
@@ -856,7 +879,8 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
     report.device = device.name;
     const env = { E2E: '1', E2E_PLATFORM: platform, DEVICE_ID: device.id, DEVICE_NAME: device.name };
     // 2. backends (+ metro) with dev.start/dev.url; on Android, map their ports into the emulator
-    for (const s of ws.services.filter((x) => ['backend', 'worker'].includes(x.type) && x.dev?.start)) {
+    const needed = svc.dependsOn?.length ? new Set(dependencyClosure(ws, [svc.name])) : null; // only what the app talks to
+    for (const s of ws.services.filter((x) => ['backend', 'worker'].includes(x.type) && x.dev?.start && (!needed || needed.has(x.name)))) {
       await startBackground(s.name, s.dev.start, path.resolve(root, s.path), s.dev.url, outDir, {}, started);
     }
     if (m.metro?.start) await startBackground(`${svc.name}-metro`, m.metro.start, cwd, m.metro.url, outDir, env, started);
@@ -948,6 +972,234 @@ async function cmdSim({ pos, flags }) {
   }
   if (!results.length) die('No platform could be tested on this machine.');
   if (results.some((r) => r.verdict !== 'PASS')) process.exit(1);
+}
+
+// ------------------------------------------------------ detect (scanner)
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', '.output', 'Pods', 'ios', 'android', '.expo',
+  'coverage', '.pipeline', '.claude', 'vendor', 'e2e', 'e2e-mobile', 'docs', 'contracts', '.turbo', '.cache', 'tmp', '.venv', 'venv', '__pycache__', 'target']);
+const DEP = {
+  mobile: ['react-native', 'expo'],
+  frontend: ['vue', 'react-dom', 'svelte', '@sveltejs/kit', '@angular/core', 'next', 'nuxt', 'solid-js', 'astro', 'preact'],
+  backend: ['express', 'fastify', '@nestjs/core', 'koa', 'hono', '@hapi/hapi', 'apollo-server', '@apollo/server', '@trpc/server', 'restify', 'elysia'],
+  worker: ['bullmq', 'bull', 'amqplib', 'kafkajs', 'node-cron', 'agenda', 'bee-queue', '@aws-sdk/client-sqs'],
+};
+const OTHER_STACKS = [['go.mod', 'Go'], ['pyproject.toml', 'Python'], ['requirements.txt', 'Python'], ['pom.xml', 'Java (Maven)'], ['build.gradle', 'Java/Kotlin (Gradle)'], ['Cargo.toml', 'Rust'], ['composer.json', 'PHP'], ['Gemfile', 'Ruby']];
+const readText = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+const readPkg = (dir) => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { return null; } };
+const PORT_IN_TEXT = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10\.0\.2\.2|host\.docker\.internal):(\d{2,5})/g;
+
+function packageManager(dir, root) {
+  for (let d = dir; d.startsWith(root); d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, 'pnpm-lock.yaml'))) return 'pnpm';
+    if (fs.existsSync(path.join(d, 'yarn.lock'))) return 'yarn';
+    if (fs.existsSync(path.join(d, 'bun.lockb')) || fs.existsSync(path.join(d, 'bun.lock'))) return 'bun';
+    if (fs.existsSync(path.join(d, 'package-lock.json'))) return 'npm';
+    if (d === root) break;
+  }
+  return 'npm';
+}
+function scanDirs(root, maxDepth = 3) {
+  const out = [];
+  const walk = (dir, depth) => {
+    out.push(dir);
+    if (depth >= maxDepth) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) if (e.isDirectory() && !SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(path.join(dir, e.name), depth + 1);
+  };
+  walk(root, 0);
+  return out;
+}
+function guessPort(pkg, dir, kind, deps) {
+  const scripts = Object.values(pkg?.scripts ?? {}).join(' ');
+  const m = /(?:--port[= ]|-p\s+|PORT=)(\d{2,5})/.exec(scripts);
+  if (m) return { port: Number(m[1]), sure: true };
+  const env = readText(path.join(dir, '.env.example')) + readText(path.join(dir, '.env.sample'));
+  const e = /^\s*PORT\s*=\s*(\d{2,5})/m.exec(env);
+  if (e) return { port: Number(e[1]), sure: true };
+  const vite = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs'].map((f) => readText(path.join(dir, f))).join('');
+  const v = /port\s*:\s*(\d{2,5})/.exec(vite);
+  if (v) return { port: Number(v[1]), sure: true };
+  const src = ['src/index.ts', 'src/main.ts', 'src/server.ts', 'src/app.ts', 'index.js', 'server.js', 'src/index.js', 'src/server.js'].map((f) => readText(path.join(dir, f))).join('\n');
+  const l = /listen\(\s*(?:process\.env\.PORT\s*(?:\|\||\?\?)\s*)?(\d{2,5})/.exec(src);
+  if (l) return { port: Number(l[1]), sure: true };
+  if (kind === 'frontend') return { port: deps.next || deps.nuxt ? 3000 : deps['@angular/core'] ? 4200 : 5173, sure: false };
+  if (kind === 'backend') return { port: 3000, sure: false };
+  return { port: null, sure: false };
+}
+function hasHealthRoute(dir) {
+  const files = listFiles(path.join(dir, 'src'), /\.(ts|js|mjs)$/).slice(0, 300);
+  return files.some((f) => /['"`]\/(api\/)?health(z)?['"`]/.test(readText(f)));
+}
+function detectService(root, dir, notes) {
+  const rel = cleanPath(posix(path.relative(root, dir))) || '.';
+  const name = (rel === '.' ? path.basename(root) : path.basename(dir)).toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  const pkg = readPkg(dir);
+  if (!pkg) {
+    const other = OTHER_STACKS.find(([f]) => fs.existsSync(path.join(dir, f)));
+    if (other) return { name, type: 'backend', path: rel, stack: other[1], commands: {}, _note: `${rel}: ${other[1]} project — fill "commands" (lint/test/build) by hand` };
+    return null;
+  }
+  if (pkg.workspaces) return null; // monorepo root, its packages are scanned separately
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  const has = (list) => list.filter((d) => deps[d]);
+  const kind = has(DEP.mobile).length ? 'mobile' : has(DEP.frontend).length ? 'frontend' : has(DEP.backend).length ? 'backend'
+    : has(DEP.worker).length ? 'worker' : (pkg.main || pkg.exports) && !pkg.scripts?.dev && !pkg.scripts?.start ? 'library' : null;
+  if (!kind) return null;
+  const pm = packageManager(dir, root);
+  const runS = (s) => (pm === 'npm' ? `npm run ${s}` : `${pm} ${s}`);
+  const sc = pkg.scripts ?? {};
+  const commands = {};
+  if (sc.lint) commands.lint = runS('lint');
+  const tc = ['typecheck', 'type-check', 'tsc', 'check-types', 'types'].find((s) => sc[s]);
+  if (tc) commands.typecheck = runS(tc);
+  else if (fs.existsSync(path.join(dir, 'tsconfig.json'))) commands.typecheck = 'npx tsc --noEmit';
+  if (sc.test && !/no test specified/.test(sc.test)) commands.test = pm === 'npm' ? 'npm test' : `${pm} test`;
+  if (sc.build && kind !== 'mobile') commands.build = runS('build');
+  const stackBits = [...has(DEP.mobile), ...has(DEP.frontend), ...has(DEP.backend), ...has(DEP.worker)];
+  if (deps.typescript) stackBits.push('TypeScript');
+  if (deps.pg || deps.postgres || deps['@prisma/client'] || deps.typeorm || deps.knex || deps['drizzle-orm']) stackBits.push('SQL DB');
+  if (deps.mongoose || deps.mongodb) stackBits.push('MongoDB');
+  const svc = { name, type: kind, path: rel, stack: stackBits.join(' + '), commands };
+  const missing = ['lint', 'typecheck', 'test', ...(kind === 'mobile' ? [] : ['build'])].filter((k) => !commands[k]);
+  if (missing.length) notes.push(`${name}: no ${missing.join('/')} script — fewer checks will run`);
+
+  if (kind === 'frontend' || kind === 'backend') {
+    const devScript = sc.dev ? 'dev' : sc.start ? 'start' : sc.serve ? 'serve' : null;
+    const { port, sure } = guessPort(pkg, dir, kind, deps);
+    if (devScript && port) {
+      const health = kind === 'backend' && hasHealthRoute(dir);
+      svc.dev = { start: runS(devScript), url: `http://localhost:${port}${kind === 'backend' ? (health ? '/health' : '/') : ''}` };
+      if (!sure) notes.push(`${name}: port ${port} is a guess — check dev.url`);
+      if (kind === 'backend' && !health) notes.push(`${name}: no /health route found — dev.url points to "/"; a /health endpoint makes tests and deploy checks reliable`);
+    } else notes.push(`${name}: could not find how to start it locally (dev/start script + port) — fill "dev" by hand`);
+  }
+  if (kind === 'mobile') {
+    const expo = Boolean(deps.expo);
+    const appJson = (() => { try { return JSON.parse(readText(path.join(dir, 'app.json'))); } catch { return {}; } })();
+    const cfg = appJson.expo ?? appJson;
+    const gradle = readText(path.join(dir, 'android/app/build.gradle'));
+    const pbx = listFiles(path.join(dir, 'ios'), /\.pbxproj$/).map(readText).join('');
+    const appId = {
+      ios: cfg?.ios?.bundleIdentifier ?? /PRODUCT_BUNDLE_IDENTIFIER = ([\w.-]+);/.exec(pbx)?.[1] ?? null,
+      android: cfg?.android?.package ?? /applicationId\s+["']([\w.]+)["']/.exec(gradle)?.[1] ?? null,
+    };
+    const platforms = process.platform === 'darwin' ? ['ios', 'android'] : ['android'];
+    const device = { ios: null, android: null };
+    if (platforms.includes('ios') && which('xcrun')) {
+      try {
+        const all = Object.values(JSON.parse(spawnSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], { encoding: 'utf8' }).stdout).devices).flat();
+        device.ios = all.filter((d) => /^iPhone/.test(d.name)).map((d) => d.name).sort().pop() ?? null;
+      } catch { /* no simulators */ }
+    }
+    if (which('emulator')) device.android = spawnSync('emulator', ['-list-avds'], { encoding: 'utf8' }).stdout?.split('\n').map((x) => x.trim()).filter(Boolean)[0] ?? null;
+    svc.mobile = {
+      framework: expo ? 'expo' : 'bare', platforms, appId, device,
+      build: expo
+        ? { ios: 'npx expo run:ios --configuration Release --no-bundler --device "{device}"', android: 'npx expo run:android --variant release --no-bundler' }
+        : { ios: 'npx react-native run-ios --mode Release --simulator "{device}" --no-packager', android: 'npx react-native run-android --mode release --no-packager' },
+      rebuildOn: 'any',
+    };
+    for (const pf of platforms) {
+      if (!appId[pf]) notes.push(`${name}: ${pf} app id not found (${expo ? `app.json → expo.${pf === 'ios' ? 'ios.bundleIdentifier' : 'android.package'}` : 'native project'}) — fill mobile.appId.${pf}`);
+      if (!device[pf]) notes.push(`${name}: no ${pf === 'ios' ? 'iOS simulator' : 'Android emulator (AVD)'} found — create one and fill mobile.device.${pf}`);
+    }
+    if (process.platform !== 'darwin') notes.push(`${name}: not macOS — iOS testing disabled (platforms: android)`);
+  }
+  return svc;
+}
+// Links: which service talks to which (by localhost ports in config, and by *_URL env names).
+function detectLinks(root, services) {
+  const byPort = new Map();
+  for (const s of services) { const p = s.dev?.url && portOf(s.dev.url); if (p) byPort.set(p, s.name); }
+  const CONFIG_FILES = ['.env.example', '.env.sample', '.env.template', '.env.development.example', 'app.json', 'eas.json', 'vite.config.ts', 'vite.config.js',
+    'next.config.js', 'next.config.mjs', 'nuxt.config.ts', 'src/config.ts', 'src/config/index.ts', 'src/api/client.ts', 'src/lib/api.ts', 'src/constants.ts', 'config.ts', 'app.config.ts', 'app.config.js'];
+  const links = [];
+  for (const s of services) {
+    const dir = path.resolve(root, s.path);
+    const text = CONFIG_FILES.map((f) => readText(path.join(dir, f))).join('\n');
+    const deps = new Set();
+    for (const m of text.matchAll(PORT_IN_TEXT)) {
+      const target = byPort.get(Number(m[1]));
+      if (target && target !== s.name) { deps.add(target); links.push({ from: s.name, to: target, why: `uses localhost:${m[1]}` }); }
+    }
+    for (const m of text.matchAll(/\b([A-Z][A-Z0-9_]*?)_(?:SERVICE_)?(?:URL|HOST|API_URL|BASE_URL)\b/g)) {
+      const key = m[1].toLowerCase().replace(/^(expo_public|vite|next_public|nuxt_public|react_app)_/, '').replace(/_/g, '-');
+      const target = services.find((o) => o.name !== s.name && (o.name === key || o.name.endsWith(`-${key}`) || key.endsWith(o.name)));
+      if (target && !deps.has(target.name)) { deps.add(target.name); links.push({ from: s.name, to: target.name, why: `env ${m[0]}` }); }
+    }
+    if (deps.size) s.dependsOn = [...deps];
+  }
+  // docker compose depends_on (service names that match ours)
+  for (const f of listFiles(root, /^(docker-)?compose[^/]*\.ya?ml$/).filter((f) => !f.includes('node_modules')).slice(0, 5)) {
+    const y = readText(f);
+    for (const m of y.matchAll(/^ {2}([\w-]+):\s*\n((?: {4,}.*\n?)*)/gm)) {
+      const from = services.find((s) => s.name === m[1]);
+      const dep = /depends_on:\s*\n((?:\s+-\s*[\w-]+\s*\n?)+)/.exec(m[2]);
+      if (!from || !dep) continue;
+      for (const d of dep[1].matchAll(/-\s*([\w-]+)/g)) {
+        const to = services.find((s) => s.name === d[1]);
+        if (to && !(from.dependsOn ?? []).includes(to.name)) { (from.dependsOn ??= []).push(to.name); links.push({ from: from.name, to: to.name, why: `compose depends_on (${posix(path.relative(root, f))})` }); }
+      }
+    }
+  }
+  return links;
+}
+function cmdDetect({ flags }) {
+  const root = findRoot(process.cwd()) ?? process.cwd();
+  const notes = [];
+  const existing = fs.existsSync(path.join(root, MANIFEST_REL)) ? readJson(path.join(root, MANIFEST_REL)) : null;
+  const dirs = scanDirs(root);
+  const services = [];
+  const subRoots = [];
+  for (const dir of dirs) {
+    const s = detectService(root, dir, notes);
+    if (s?._note) { notes.push(s._note); delete s._note; }
+    if (!s) continue;
+    if (dir === root && dirs.some((d) => d !== root && readPkg(d))) continue; // root package.json of a workspace with sub-projects
+    if (subRoots.some((p) => dir.startsWith(p + path.sep) && services.find((x) => x.path === cleanPath(posix(path.relative(root, p))))?.type !== 'library')) continue;
+    subRoots.push(dir);
+    services.push(s);
+  }
+  // unique names
+  const seen = new Map();
+  for (const s of services) { const n = seen.get(s.name) ?? 0; seen.set(s.name, n + 1); if (n) s.name = `${s.name}-${n + 1}`; }
+  // infra
+  const infraDir = ['infra', 'deploy', 'deployment', 'k8s', 'helm', 'terraform', 'ops'].map((d) => path.join(root, d)).find((d) => fs.existsSync(d));
+  if (infraDir) services.push({ name: 'infra', type: 'infra', path: cleanPath(posix(path.relative(root, infraDir))), stack: 'Docker / CI / IaC', commands: {} });
+  const infraFiles = [...listFiles(root, /^(Dockerfile[^/]*|(docker-)?compose[^/]*\.ya?ml)$/), ...listFiles(path.join(root, '.github', 'workflows'), /\.ya?ml$/)]
+    .filter((f) => !f.includes('node_modules')).map((f) => posix(path.relative(root, f))).slice(0, 30);
+  const links = detectLinks(root, services);
+  // git layout
+  const ws = { services };
+  const rootRepo = repoInfo(root, root);
+  const subs = rootRepo ? submodulePaths(rootRepo.root) : [];
+  for (const s of services) {
+    const info = repoInfo(root, path.resolve(root, s.path));
+    s._repo = !info ? 'NOT A GIT REPO' : info.rel === '' ? '(workspace)' : subs.includes(info.rel) ? `${info.rel} (submodule)` : info.rel;
+    if (!info) notes.push(`${s.name}: not in a git repository — run "git init" + first commit in ${s.path}`);
+  }
+  if (!rootRepo) notes.push('workspace root is not a git repo — "git init" here to version the manifest, specs, contracts and e2e');
+  const kept = existing?.services?.filter((e) => !services.some((s) => s.path === cleanPath(e.path))) ?? [];
+  const proposal = {
+    name: existing?.name ?? path.basename(root),
+    services: [...(existing?.services ?? []).map((e) => services.find((s) => s.path === cleanPath(e.path)) ? { ...services.find((s) => s.path === cleanPath(e.path)), ...e } : e),
+      ...services.filter((s) => !existing?.services?.some((e) => cleanPath(e.path) === s.path))].map(({ _repo, ...s }) => s),
+    conventions: existing?.conventions ?? { replyLanguage: 'uk', comments: { language: 'uk', level: 'all', enforce: true } },
+    contracts: existing?.contracts ?? { path: 'contracts' },
+    ...(services.some((s) => s.type === 'frontend') || existing?.e2e ? { e2e: existing?.e2e ?? { path: 'e2e', command: 'npx playwright test' } } : {}),
+    ...(services.some((s) => s.type === 'mobile') || existing?.e2eMobile ? { e2eMobile: existing?.e2eMobile ?? { path: 'e2e-mobile', timeoutSec: 1800 } } : {}),
+    ...(existing?.audit ? { audit: existing.audit } : {}),
+    ...(existing?.pipeline ? { pipeline: existing.pipeline } : {}),
+    ...(existing?.deploy ? { deploy: existing.deploy } : {}),
+  };
+  if (flags.json) return log(JSON.stringify({ root: posix(root), proposal, links, infraFiles, notes, keptFromExisting: kept.map((k) => k.name) }, null, 2));
+  log(`Scanned ${posix(root)}\n`);
+  table(['service', 'type', 'path', 'repo', 'stack', 'checks', 'dev url'], services.map((s) => [s.name, s.type, s.path, s._repo, s.stack, Object.keys(s.commands).join(',') || '—', s.dev?.url ?? (s.mobile ? 'simulator' : '—')]));
+  if (links.length) { log('\nLinks:'); for (const l of links) log(`  ${l.from} → ${l.to}   (${l.why})`); } else log('\nLinks: none found (fill "dependsOn" by hand if clients call backends)');
+  if (infraFiles.length) log(`\nInfra files: ${infraFiles.join(', ')}`);
+  if (notes.length) log(`\nTo check:\n  - ${notes.join('\n  - ')}`);
+  log(`\nFull proposal: ${PL} detect --json`);
 }
 
 // ------------------------------------------------------------ guard hook
@@ -1058,7 +1310,11 @@ function cmdScaffold() {
   }
   const w = repoInfo(root, root);
   if (w) {
-    const nested = allRepoRoots(root, ws).filter((o) => o !== w.root && o.startsWith(w.root + path.sep)).map((o) => posix(path.relative(w.root, o)) + '/');
+    const subs = submodulePaths(w.root);
+    const nested = allRepoRoots(root, ws).filter((o) => o !== w.root && o.startsWith(w.root + path.sep))
+      .map((o) => posix(path.relative(w.root, o)))
+      .filter((rel) => !subs.includes(rel)) // submodules are tracked by the parent repo — never ignore them
+      .map((rel) => rel + '/');
     const text = fs.readFileSync(gi, 'utf8');
     const missing = nested.filter((n) => !text.split('\n').some((l) => l.trim() === n || l.trim() === '/' + n));
     if (missing.length) {
@@ -1126,7 +1382,8 @@ const HELP = `Claude Team Kit — ${PL} <command>
 
   rules                          print the orchestrator rules
   conventions                    print coding conventions (comment language etc.) for agents
-  services [--type t] [--json]   list workspace services
+  detect [--json]                scan folders: services, types, repos/submodules, checks, ports, links between projects
+  services [--type t] [--json]   list workspace services with their links (uses / used by)
   start <id> <svc,..|all>        create feat/<id> branches in affected repos [--no-qa] [--allow-dirty]
   diff <id|adhoc>                build the blind-audit diff (.pipeline/<id>/diff.patch)
   owner <files..> | --file f     which agent owns these files
@@ -1152,7 +1409,7 @@ const COMMANDS = {
     const lang = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
     process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
   },
-  conventions: cmdConventions, comments: cmdComments, sim: cmdSim,
+  detect: cmdDetect, conventions: cmdConventions, comments: cmdComments, sim: cmdSim,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
   doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,

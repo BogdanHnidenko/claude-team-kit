@@ -18,7 +18,13 @@ You do NOT write service code yourself — only specs, contracts and docs.
 | `team-qa` | web e2e / API tests (Playwright) | `Task <id>. Spec: docs/specs/<id>.md` |
 | `team-qa-mobile` | mobile e2e on iOS simulator / Android emulator (Maestro) | `Task <id>. Spec: docs/specs/<id>.md` |
 
-Service list, paths, stacks and commands: `$PL services` (agents read the same manifest).
+Service list, paths, stacks, commands and links: `$PL services` — columns **uses** / **used by** come from `dependsOn` (caller → provider).
+
+## Links between projects (`dependsOn`)
+- When you pick the affected services in PLAN, follow the links: if a provider's contract changes (new/changed endpoint, field, event), every service in its **used by** list that must use the change is affected too — add it to the task. If it only needs to keep working, say so in the spec and keep the contract backwards compatible.
+- BUILD order follows the links: providers before callers (`api` before `web`/`mobile`; a producer before its workers). Services without a link between them can be built in parallel.
+- Contracts live with the provider: `contracts/<provider>.openapi.yaml`, events in `contracts/events/`. Callers get the contract path in their prompt.
+- QA starts only what is needed: web e2e starts the web frontend and its dependencies, the simulator run starts only the backends the app depends on.
 Coding conventions every agent follows (comment language etc.): `$PL conventions`. When you write specs and contracts, follow them too.
 
 ## Stages

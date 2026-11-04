@@ -8,7 +8,14 @@ type Service = { name: string; type: string; path: string; dev?: { start?: strin
 
 const root = path.resolve(__dirname, '..');
 const ws = JSON.parse(fs.readFileSync(path.join(root, '.pipeline/workspace.json'), 'utf8')) as { services: Service[] };
-const running = ws.services.filter((s) => s.dev?.start && s.dev?.url);
+type Svc = Service & { dependsOn?: string[] };
+const all = ws.services as Svc[];
+// Web frontends + everything they depend on (transitively); without dependsOn — every service with dev.start.
+const needed = new Set<string>();
+const visit = (name: string) => { if (needed.has(name)) return; needed.add(name); all.find((s) => s.name === name)?.dependsOn?.forEach(visit); };
+all.filter((s) => s.type === 'frontend').forEach((s) => visit(s.name));
+const hasLinks = all.some((s) => s.dependsOn?.length);
+const running = all.filter((s) => s.dev?.start && s.dev?.url && (!hasLinks || needed.has(s.name)));
 const web = ws.services.find((s) => s.type === 'frontend' && s.dev?.url);
 
 export default defineConfig({

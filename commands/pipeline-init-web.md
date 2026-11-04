@@ -5,6 +5,7 @@ description: Set up the team pipeline for a WEB project (web frontend + backend 
 Talk to me in Ukrainian throughout.
 
 Set up the Claude team pipeline in the current folder (the workspace root) for **web**: web frontend(s) → `team-frontend`, tests → `team-qa` (Playwright), plus backend services and infra.
+Start from the scanner: `node ~/.claude/pipeline/pipeline.mjs detect --json` (services, git layout, checks, ports, links `dependsOn`), then verify it by reading files. Keep `dependsOn` links (caller → provider) for every client and service.
 Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace`.
 
 1. If `.pipeline/workspace.json` exists, read it and EXTEND it — keep every service and setting already there (the workspace may also have a mobile app). Never drop entries.
