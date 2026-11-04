@@ -1,0 +1,41 @@
+# Приклад сценарію Maestro. Реальні сценарії задачі лежать у e2e-mobile/<task-id>/AC-<n>.yaml
+# APP_ID і PLATFORM підставляє pipeline.mjs sim (для iOS — bundle id, для Android — package)
+appId: ${APP_ID}
+name: "AC-1: користувач змінює email у профілі"
+tags:
+  - change-email
+---
+# Запускаємо додаток з чистим станом, щоб тест не залежав від попередніх
+- launchApp:
+    clearState: true
+
+# Логінимося тестовим користувачем
+- tapOn:
+    id: "login-email-input"
+- inputText: "qa+${PLATFORM}@example.test"
+- tapOn:
+    id: "login-password-input"
+- inputText: "Test-Password-1"
+- tapOn:
+    id: "login-submit-button"
+
+# Переходимо в налаштування профілю
+- tapOn:
+    id: "tab-settings"
+- assertVisible:
+    id: "profile-email-input"
+- takeScreenshot: AC-1-01-settings-opened
+
+# Вводимо нову адресу і зберігаємо
+- tapOn:
+    id: "profile-email-input"
+- eraseText
+- inputText: "new+${PLATFORM}@example.test"
+- hideKeyboard
+- tapOn:
+    id: "profile-save-button"
+
+# Перевіряємо повідомлення про успіх
+- assertVisible:
+    text: "Email оновлено"
+- takeScreenshot: AC-1-02-success

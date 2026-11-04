@@ -1,0 +1,214 @@
+{
+  "name": "my-app",
+  "services": [
+    {
+      "name": "web",
+      "type": "frontend",
+      "path": "frontend",
+      "stack": "Vue 3 + TypeScript + Pinia + Vite",
+      "commands": {
+        "lint": "npm run lint",
+        "typecheck": "npm run typecheck",
+        "test": "npx vitest run",
+        "build": "npm run build"
+      },
+      "dev": {
+        "start": "npm run dev",
+        "url": "http://localhost:5173"
+      }
+    },
+    {
+      "name": "mobile",
+      "type": "mobile",
+      "path": "apps/mobile",
+      "stack": "React Native 0.76 + Expo SDK 52 + TypeScript + React Navigation",
+      "commands": {
+        "lint": "npm run lint",
+        "typecheck": "npx tsc --noEmit",
+        "test": "npx jest --ci"
+      },
+      "mobile": {
+        "framework": "expo",
+        "platforms": [
+          "ios",
+          "android"
+        ],
+        "appId": {
+          "ios": "com.example.myapp",
+          "android": "com.example.myapp"
+        },
+        "device": {
+          "ios": "iPhone 16",
+          "android": "Pixel_8_API_35"
+        },
+        "build": {
+          "ios": "npx expo run:ios --configuration Release --no-bundler --device \"{device}\"",
+          "android": "npx expo run:android --variant release --no-bundler"
+        },
+        "rebuildOn": "any",
+        "buildTimeoutSec": 2400
+      }
+    },
+    {
+      "name": "gateway",
+      "type": "backend",
+      "path": "services/gateway",
+      "stack": "Node 20 + Express + TypeScript",
+      "commands": {
+        "lint": "npm run lint",
+        "typecheck": "npx tsc --noEmit",
+        "test": "npx vitest run",
+        "build": "npm run build"
+      },
+      "dev": {
+        "start": "npm run dev",
+        "url": "http://localhost:3000/health"
+      }
+    },
+    {
+      "name": "users",
+      "type": "backend",
+      "path": "services/users",
+      "stack": "Node 20 + Express + TypeScript + PostgreSQL",
+      "commands": {
+        "lint": "npm run lint",
+        "typecheck": "npx tsc --noEmit",
+        "test": "npx vitest run",
+        "build": "npm run build"
+      },
+      "dev": {
+        "start": "npm run dev",
+        "url": "http://localhost:3001/health"
+      }
+    },
+    {
+      "name": "notifications",
+      "type": "worker",
+      "path": "services/notifications",
+      "stack": "Node 20 + BullMQ + TypeScript",
+      "commands": {
+        "typecheck": "npx tsc --noEmit",
+        "test": "npx vitest run",
+        "build": "npm run build"
+      }
+    },
+    {
+      "name": "infra",
+      "type": "infra",
+      "path": "infra",
+      "stack": "Docker Compose + GitHub Actions",
+      "commands": {
+        "lint": "docker compose -f docker-compose.yml config -q"
+      }
+    }
+  ],
+  "conventions": {
+    "comments": {
+      "language": "uk",
+      "level": "all",
+      "enforce": true,
+      "exclude": []
+    },
+    "extra": [
+      "Приклад: усі суми зберігаємо в копійках (integer)."
+    ]
+  },
+  "contracts": {
+    "path": "contracts",
+    "codegen": "npx openapi-typescript ../contracts/gateway.openapi.yaml -o src/api/schema.d.ts"
+  },
+  "e2e": {
+    "path": "e2e",
+    "command": "npx playwright test"
+  },
+  "e2eMobile": {
+    "path": "e2e-mobile",
+    "timeoutSec": 1800
+  },
+  "audit": {
+    "exclude": [],
+    "maxDiffLines": 3000
+  },
+  "pipeline": {
+    "branchPrefix": "feat/",
+    "maxLoops": 3,
+    "verifySteps": [
+      "lint",
+      "typecheck",
+      "test",
+      "build"
+    ],
+    "stepTimeoutSec": 900,
+    "maxFileSizeKb": 1024
+  },
+  "deploy": {
+    "environments": {
+      "staging": {
+        "requireApproval": false,
+        "steps": [
+          {
+            "name": "build images",
+            "cwd": "infra",
+            "run": "docker compose build"
+          },
+          {
+            "name": "start stack",
+            "cwd": "infra",
+            "run": "docker compose up -d"
+          }
+        ],
+        "healthchecks": [
+          "http://localhost:3000/health",
+          {
+            "url": "http://localhost:8080",
+            "retries": 15,
+            "intervalSec": 4
+          }
+        ],
+        "rollback": [
+          {
+            "name": "stop stack",
+            "cwd": "infra",
+            "run": "docker compose down"
+          }
+        ]
+      },
+      "production": {
+        "requireApproval": true,
+        "steps": [
+          {
+            "name": "trigger CI deploy",
+            "run": "gh workflow run deploy.yml -f environment=production"
+          }
+        ],
+        "healthchecks": [
+          {
+            "url": "https://api.example.com/health",
+            "retries": 30,
+            "intervalSec": 10
+          }
+        ]
+      },
+      "mobile-preview": {
+        "requireApproval": false,
+        "steps": [
+          {
+            "name": "EAS preview build",
+            "cwd": "apps/mobile",
+            "run": "npx eas-cli build --profile preview --platform all --non-interactive --no-wait"
+          }
+        ]
+      },
+      "mobile-store": {
+        "requireApproval": true,
+        "steps": [
+          {
+            "name": "EAS production build + submit",
+            "cwd": "apps/mobile",
+            "run": "npx eas-cli build --profile production --platform all --non-interactive --auto-submit"
+          }
+        ]
+      }
+    }
+  }
+}
