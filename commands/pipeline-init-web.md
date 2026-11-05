@@ -25,4 +25,6 @@ Reference format: `node ~/.claude/pipeline/pipeline.mjs template workspace`.
 
 For every web or mobile client offer to create its testing guide `docs/testing/<service>.md` from `docs/testing/_TEMPLATE.md`: ask me 3–5 short questions (what the app is for, who uses it and how, what must never break, where it usually breaks, test accounts) and fill it in Ukrainian.
 
+Set `"qa": { "defaultDepth": "ask" }` unless it exists (the orchestrator asks the depth per task). If I say I always want one level, use `smoke`, `deep` or `exhaustive` instead.
+
 Finish with: what was created, what is missing, and a first command to try, e.g. `/feature <small web feature>`.

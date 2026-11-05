@@ -31,7 +31,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor']
+const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -422,6 +422,7 @@ function cmdCommit({ pos, flags }) {
       const stamp = st.stamps?.[kind];
       if (!stamp) problems.push(`${kind} result is not stamped (QA agent must run: ${PL} stamp ${id} ${kind})`);
       else if (stamp.hash !== full) problems.push(`code changed after ${kind === 'qa' ? 'web' : 'mobile'} tests — re-run them (/test)`);
+      else if (st.depth && stamp.depth && stamp.depth !== st.depth) problems.push(`QA depth changed to "${st.depth}" after ${kind} was tested at "${stamp.depth}" — test again at the new depth`);
     }
   }
   if (problems.length) die(`Commit refused:\n  - ${problems.join('\n  - ')}`, 2);
@@ -495,7 +496,7 @@ function cmdRollback({ pos }) {
 
 function cmdMark({ pos }) {
   const [id, ...kv] = pos;
-  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<security|qa|verify>] [note=<text>]');
+  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<security|qa|verify>] [depth=smoke|deep|exhaustive] [note=<text>]');
   const { root, ws } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   const cur = db.tasks.find((t) => t.id === id) ?? die(`Unknown task "${id}"`);
@@ -509,6 +510,11 @@ function cmdMark({ pos }) {
     else if (k === 'status') { if (!STATUSES.includes(v)) die(`status must be one of ${STATUSES.join(', ')}`); patch.status = v; }
     else if (k === 'note') patch.note = v;
     else if (k === 'loop') loopName = v;
+    else if (k === 'depth') {
+      if (!DEPTHS[v]) die(`depth must be one of ${Object.keys(DEPTHS).join(', ')}`);
+      patch.depth = v;
+      const st = loadState(root, id); st.depth = v; saveState(root, st);
+    }
     else die(`Unknown key "${k}"`);
   }
   if (loopName) {
@@ -524,7 +530,7 @@ function cmdMark({ pos }) {
     log(`fix round ${loopName}: ${loops[loopName]}/${max}`);
   }
   const t = updateTask(root, id, patch);
-  log(`✔ ${id}: stage ${t.stage} ${t.status}${t.note ? ` — ${t.note}` : ''}`);
+  log(`✔ ${id}: stage ${t.stage} ${t.status}${t.depth ? `, QA depth ${t.depth}` : ''}${t.note ? ` — ${t.note}` : ''}`);
 }
 
 function cmdStatus() {
@@ -1221,6 +1227,7 @@ function cmdDetect({ flags }) {
     services: [...(existing?.services ?? []).map((e) => services.find((s) => s.path === cleanPath(e.path)) ? { ...services.find((s) => s.path === cleanPath(e.path)), ...e } : e),
       ...services.filter((s) => !existing?.services?.some((e) => cleanPath(e.path) === s.path))].map(({ _repo, ...s }) => s),
     conventions: existing?.conventions ?? { replyLanguage: 'uk', comments: { language: 'uk', level: 'all', enforce: true } },
+    qa: existing?.qa ?? { defaultDepth: 'ask' },
     contracts: existing?.contracts ?? { path: 'contracts' },
     ...(services.some((s) => s.type === 'frontend') || existing?.e2e ? { e2e: existing?.e2e ?? { path: 'e2e', command: 'npx playwright test' } } : {}),
     ...(services.some((s) => s.type === 'mobile') || existing?.e2eMobile ? { e2eMobile: existing?.e2eMobile ?? { path: 'e2e-mobile', timeoutSec: 1800 } } : {}),
@@ -1246,7 +1253,11 @@ function cmdCurrent({ flags }) {
   const open = sorted.find((t) => t.status === 'IN_PROGRESS' || t.status === 'BLOCKED');
   const t = open ?? (flags.any ? sorted[0] : null);
   if (!t) { log('NONE'); process.exit(3); }
-  if (flags.json) return log(JSON.stringify({ id: t.id, status: t.status, stage: t.stage, services: t.services ?? [], qa: readJson(statePath(root, t.id)).qa ?? [] }));
+  if (flags.json) {
+    const st = readJson(statePath(root, t.id));
+    const ws = readJson(path.join(root, MANIFEST_REL));
+    return log(JSON.stringify({ id: t.id, status: t.status, stage: t.stage, services: t.services ?? [], qa: st.qa ?? [], depth: taskDepth(root, ws, t.id), defaultDepth: ws.qa?.defaultDepth ?? 'ask' }));
+  }
   log(t.id);
 }
 // Add services (and their repos) to a running task, e.g. when a fix turns out to belong to another project.
@@ -1287,9 +1298,96 @@ function cmdStamp({ pos }) {
   const { root } = loadWorkspace();
   const st = loadState(root, id);
   const verdict = readJson(path.join(taskDir(root, id), file), null)?.verdict ?? die(`.pipeline/${id}/${file} not found — write the report first`);
+  const { ws } = loadWorkspace();
+  const cov = coverageReport(root, ws, id, kind === 'qa' ? 'web' : 'mobile');
+  if (!cov.ok) die(`Test coverage is below the "${cov.depth ?? '?'}" depth — not stamped:\n  - ${cov.problems.join('\n  - ')}\nAdd the missing cases (see: ${PL} playbook), re-run them, then stamp again.`, 2);
   st.stamps = { ...(st.stamps ?? {}), [kind]: { verdict, hash: fingerprint(st, [PIPELINE_EXCLUDE]), at: now() } };
   saveState(root, st);
-  log(`✔ ${kind} ${verdict} stamped for the current code of ${id}`);
+  st.stamps[kind].depth = cov.depth; st.stamps[kind].cases = cov.total;
+  saveState(root, st);
+  log(`✔ ${kind} ${verdict} stamped for the current code of ${id} (depth ${cov.depth}, ${cov.total} cases)`);
+}
+
+// ------------------------------------------------------ QA depth & coverage
+const DEPTHS = {
+  smoke: { label: 'поверхневе', perAc: 1, cats: ['happy'] },
+  deep: { label: 'поглиблене', perAc: 4, cats: ['happy', 'negative', 'boundary', 'partial', 'navigation', 'interrupt'] },
+  exhaustive: { label: 'дуже ретельне', perAc: 8, cats: ['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual'] },
+};
+const CATEGORIES = new Set(['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual', 'regression']);
+function taskDepth(root, ws, id) {
+  const st = fs.existsSync(statePath(root, id)) ? readJson(statePath(root, id)) : {};
+  return st.depth ?? (DEPTHS[ws.qa?.defaultDepth] ? ws.qa.defaultDepth : null);
+}
+// Acceptance criteria ids from the spec ("AC-1", "AC-2", …).
+function specAcs(root, id) {
+  const text = readText(path.join(root, 'docs', 'specs', `${id}.md`));
+  const section = /##[^\n]*Acceptance criteria[^\n]*\n([\s\S]*?)(\n## |\s*$)/i.exec(text)?.[1] ?? text;
+  return [...new Set([...section.matchAll(/\bAC-(\d+)\b/g)].map((m) => `AC-${m[1]}`))];
+}
+// Cases written by QA: mobile = one Maestro file per case (tags), web = one test() per case ("AC-1 [category] …").
+function collectCases(root, ws, id, kind) {
+  const cases = [];
+  if (kind === 'mobile') {
+    const dir = path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
+    for (const f of listFiles(dir, /\.ya?ml$/i)) {
+      const head = readText(f).split(/^---\s*$/m)[0];
+      const tagBlock = /tags:\s*\[([^\]]*)\]/.exec(head)?.[1] ?? [...head.matchAll(/^\s*-\s*([\w-]+)\s*$/gm)].map((m) => m[1]).join(',');
+      const tags = tagBlock.split(',').map((t) => t.trim().replace(/['"]/g, '')).filter(Boolean);
+      const ac = tags.find((t) => /^AC-\d+$/.test(t)) ?? /(AC-\d+)/.exec(path.basename(f))?.[1] ?? null;
+      cases.push({ file: posix(path.relative(root, f)), ac, cats: tags.filter((t) => CATEGORIES.has(t)) });
+    }
+  } else {
+    const dir = path.join(root, cleanPath(ws.e2e?.path ?? 'e2e'));
+    for (const f of listFiles(dir, /\.(spec|test)\.(ts|js)$/).filter((f) => path.basename(f).startsWith(id))) {
+      for (const m of readText(f).matchAll(/\btest(?:\.\w+)?\(\s*[`'"](AC-\d+)\s*\[([^\]]+)\]/g)) {
+        cases.push({ file: posix(path.relative(root, f)), ac: m[1], cats: m[2].split(/[,\s]+/).filter((c) => CATEGORIES.has(c)) });
+      }
+    }
+  }
+  return cases;
+}
+function coverageReport(root, ws, id, kind) {
+  const depth = taskDepth(root, ws, id);
+  if (!depth) return { ok: false, depth: null, problems: [`depth is not set — ask the user and run: ${PL} mark ${id} depth=smoke|deep|exhaustive`] };
+  const rule = DEPTHS[depth];
+  const acs = specAcs(root, id);
+  const cases = collectCases(root, ws, id, kind);
+  const report = readJson(path.join(taskDir(root, id), kind === 'mobile' ? 'qa-mobile.json' : 'qa.json'), {});
+  const na = report.not_applicable ?? {};
+  const problems = [];
+  if (!acs.length) problems.push(`no "AC-<n>" found in docs/specs/${id}.md (Acceptance criteria section)`);
+  const planFile = kind === 'mobile' ? path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id, 'CASES.md') : path.join(root, cleanPath(ws.e2e?.path ?? 'e2e'), `${id}.cases.md`);
+  if (!fs.existsSync(planFile)) problems.push(`test plan missing: ${posix(path.relative(root, planFile))}`);
+  const perAc = acs.map((ac) => ({ ac, n: cases.filter((c) => c.ac === ac).length }));
+  for (const { ac, n } of perAc) if (n < rule.perAc) problems.push(`${ac}: ${n} case(s), need at least ${rule.perAc} for ${depth}`);
+  const present = new Set(cases.flatMap((c) => c.cats));
+  for (const cat of rule.cats) {
+    if (present.has(cat)) continue;
+    if (typeof na[cat] === 'string' && na[cat].trim().length >= 10) continue;
+    problems.push(`category "${cat}" not covered (or declare not_applicable.${cat} with a real reason in the report)`);
+  }
+  const untagged = cases.filter((c) => !c.ac || !c.cats.length).map((c) => c.file);
+  if (untagged.length) problems.push(`cases without AC id or category tag: ${[...new Set(untagged)].slice(0, 10).join(', ')}`);
+  return { ok: !problems.length, depth, label: rule.label, total: cases.length, perAc, categories: [...present], problems };
+}
+function cmdCoverage({ pos, flags }) {
+  const [id, kindArg] = pos;
+  if (!id) die('Usage: coverage <task-id> [mobile|web]');
+  const { root, ws } = loadWorkspace();
+  loadState(root, id);
+  const kinds = kindArg ? [kindArg] : (readJson(statePath(root, id)).qa ?? []).map((q) => (q === 'web' ? 'web' : 'mobile'));
+  let ok = true;
+  for (const kind of kinds) {
+    const r = coverageReport(root, ws, id, kind);
+    if (flags.json) { log(JSON.stringify({ kind, ...r })); ok &&= r.ok; continue; }
+    log(`${r.ok ? '✔' : '✖'} ${kind} coverage — depth: ${r.depth ?? '?'}${r.label ? ` (${r.label})` : ''}, cases: ${r.total ?? 0}`);
+    for (const p of r.perAc ?? []) log(`   ${p.ac}: ${p.n}`);
+    if (r.categories?.length) log(`   categories: ${r.categories.join(', ')}`);
+    for (const p of r.problems) log(`   ✖ ${p}`);
+    ok &&= r.ok;
+  }
+  if (!ok) process.exit(1);
 }
 
 // ------------------------------------------------------------ guard hook
@@ -1492,7 +1590,9 @@ const HELP = `Claude Team Kit — ${PL} <command>
   status                         table of all tasks
   current [--json] [--any]       the task the user most likely means (latest unfinished)
   add <id> <svc,..>              add services/projects to a running task (branches in their repos)
-  stamp <id> <qa|qa-mobile>      tie a QA verdict to the current code (commit requires a fresh stamp)
+  stamp <id> <qa|qa-mobile>      tie a QA verdict to the current code (commit requires a fresh stamp; refused if coverage < depth)
+  coverage <id> [mobile|web]     are there enough test cases and categories for the task's QA depth?
+  playbook                       the tester's case catalogue (forms, fields, gestures, interruptions, network…)
   scaffold | doctor              set up / check the workspace
   template <workspace|spec|playwright|mobile-flow|testing-guide>
   guard                          PreToolUse hook (reads JSON on stdin)
@@ -1506,7 +1606,8 @@ const COMMANDS = {
     const lang = LANGUAGES[ws.conventions?.replyLanguage ?? 'uk'] ?? LANGUAGES.uk;
     process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
   },
-  detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, comments: cmdComments, sim: cmdSim, screen: cmdScreen,
+  detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, coverage: cmdCoverage,
+  playbook: () => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
   doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,

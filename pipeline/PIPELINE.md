@@ -35,6 +35,11 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - `$PL start <id> <svc,svc>` (add `--no-qa` only when there is nothing user-visible or API-visible to test, and say why).
 - Write `docs/specs/<id>.md` from `docs/specs/_TEMPLATE.md`: per-service sections, contracts, infra, numbered acceptance criteria, and the **Test focus** section (what changed for the user, what could break nearby, what not to re-test, risky cases).
 - Update contracts under the manifest's `contracts.path` (OpenAPI per HTTP service, `events/` for messages between services).
+- **QA depth** — if the task needs QA and the depth is not given in the request and `qa.defaultDepth` in the manifest is missing or `"ask"`, ask the user together with your other questions (AskUserQuestion, one question, three options):
+  - `smoke` — **Поверхневе**: працює чи ні, 1 сценарій на критерій (швидко);
+  - `deep` — **Поглиблене**: + помилки, межі, неповні форми, навігація, переривання (≥ 4 на критерій);
+  - `exhaustive` — **Дуже ретельне**: усе, що може зробити людина — дані, жести/свайпи, мережа, стани, доступність, вигляд (≥ 8 на критерій, найдовше).
+  Words in the request map too: «швидко/поверхнево» → smoke, «поглиблено/детально» → deep, «дуже ретельно/все можливе/максимально» → exhaustive. Save it: `$PL mark <id> depth=<depth>`.
 - Show the user a ≤ 8-line summary. Continue without waiting unless you asked questions.
 - `$PL mark <id> stage=1 status=IN_PROGRESS note="spec ready"`
 
@@ -43,6 +48,12 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Then web frontends (`team-frontend`) and mobile apps (`team-mobile`) — they can run in parallel. Then `team-devops` mode `infra` if the spec has an Infra section.
 - If `team-mobile` replies `NATIVE_CHANGED: yes`, mention it in your stage line (the simulator build will be redone automatically).
 - Gate: every agent replies `STATUS: DONE`. On `BLOCKED`: answer from the spec, fix the spec/contract yourself, or ask the user — then call that agent again.
+
+## Questions from agents (any stage, any agent)
+- An agent replying `STATUS: QUESTIONS` is doing the right thing — never answer for the user on matters of product, UX, data, money, security or scope. Only answer yourself what the spec/contracts/Decisions already answer, and say so to the agent.
+- Collect questions from all agents of the current stage, remove duplicates, and ask the user in ONE go: AskUserQuestion for questions with options (up to 4 per call; put the agent's recommendation first, marked «(рекомендовано)»), plain text for open ones. Ukrainian, short, with the "why it matters" line.
+- Write every answer into the spec's **Decisions** table (question, answer, who asked, date), then call the agent again with: the answers + "continue". If the user is away (unattended run), take the agent's recommendation, record it in Decisions as "assumed", and list it in the final report.
+- `ASSUMPTIONS:` in an agent's reply → show them to the user in the stage line; if the user disagrees, treat it as a fix request (`/fix`).
 - `$PL mark <id> stage=2 status=IN_PROGRESS note="build done"`
 
 **3. SECURITY (blind)**
@@ -53,6 +64,7 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Verdict `BLOCK` → fix loop (below) → repeat stage 3.
 
 **4. QA** — `$PL start` printed which QA the task needs (also `qa` in `.pipeline/<id>/state.json`).
+- Pass the depth in the prompt: `Task <id>. Spec: docs/specs/<id>.md. Depth: <depth>.` (set it first if missing — see PLAN).
 - `web` → call `team-qa` (writes `qa.json`).
 - `mobile` → call `team-qa-mobile` (writes `qa-mobile.json`, runs `$PL sim`). Run the two QA agents one after another, not in parallel — they start the same backends.
 - Any verdict `FAIL` → fix loop → since code changed, repeat stage 3, then stage 4.

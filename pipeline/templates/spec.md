@@ -45,5 +45,10 @@ List only the services that change, in build order (providers before consumers).
 - **Not to re-test:** unrelated parts of the app.
 - **Risky cases specific to this feature:** e.g. offline while saving, double submit, very long input.
 
-## 7. Out of scope
+## 7. Decisions (questions answered by the user)
+Every question an agent asked and the user's answer — agents read this before asking again.
+| # | Question | Answer | Asked by | Date |
+|---|---|---|---|---|
+
+## 8. Out of scope
 - ...

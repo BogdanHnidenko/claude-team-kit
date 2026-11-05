@@ -114,6 +114,9 @@
       "Приклад: усі суми зберігаємо в копійках (integer)."
     ]
   },
+  "qa": {
+    "defaultDepth": "ask"
+  },
   "contracts": {
     "path": "contracts",
     "codegen": "npx openapi-typescript ../contracts/gateway.openapi.yaml -o src/api/schema.d.ts"
