@@ -1,5 +1,5 @@
 ---
-description: Run the full team pipeline (plan → build → security → QA → release → optional deploy) for a feature
+description: Run the full team pipeline (plan → build → review (претестер) + QA → release → optional deploy) for a feature
 argument-hint: <what to build>
 ---
 

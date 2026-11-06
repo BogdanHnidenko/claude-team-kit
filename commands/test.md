@@ -1,6 +1,6 @@
 ---
-description: Run tests or checks only (no fixes) — unit, lint, typecheck, comments, web, api, mobile, ios, android, security, regression or all
-argument-hint: [task-id] [unit|lint|typecheck|comments|web|api|mobile|ios|android|security|regression|all] [поверхнево|поглиблено|дуже ретельно] [сервіс або сценарій]
+description: Run tests or checks only (no fixes) — unit, lint, typecheck, comments, web, api, mobile, ios, android, review, regression or all
+argument-hint: [task-id] [unit|lint|typecheck|comments|web|api|mobile|ios|android|review|regression|all] [поверхнево|поглиблено|дуже ретельно] [сервіс або сценарій]
 ---
 
 Request: $ARGUMENTS

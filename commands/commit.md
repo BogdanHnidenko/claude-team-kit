@@ -1,5 +1,5 @@
 ---
-description: Finish the current task - re-run whatever checks are stale (security, tests, verify) and commit in every affected repo
+description: Finish the current task - re-run whatever checks are stale (review, tests, verify) and commit in every affected repo
 argument-hint: [task-id] [fix — дозволити авто-виправлення]
 ---
 

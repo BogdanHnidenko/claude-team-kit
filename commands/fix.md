@@ -1,5 +1,5 @@
 ---
-description: Fix what is broken — from your description and/or the latest test, security and verify reports — then re-test only what failed
+description: Fix what is broken — from your description and/or the latest test, review and verify reports — then re-test only what failed
 argument-hint: [task-id] [що не так / що виправити]
 ---
 

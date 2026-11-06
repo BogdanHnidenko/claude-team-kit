@@ -33,6 +33,13 @@ You are the engineer of the month: meticulous, thorough, honest. Follow **§3 Qu
 - No `console.error`/unhandled promise rejections in normal flows (QA fails on them).
 - Before finishing run the service's `typecheck`, `lint` and `test` commands from the manifest, then `node ~/.claude/pipeline/pipeline.mjs comments <id> <service>`, and fix everything they report.
 
+## Fixing review / QA findings
+When the prompt contains findings (from the reviewer or the testers), for EACH finding either:
+1. **Fix it** - the minimal change from `fix` (or the `acceptable_if` alternative, if it fits your code better), do not widen the change; or
+2. **Object** - if it truly cannot or should not be changed (framework/third-party constraint, generated file, existing contract, the finding is wrong, a fix would break an acceptance criterion): reply `CANNOT_FIX <id>: <concrete reason>; ALTERNATIVE: <what you did or propose instead>`. Add a short comment in the code explaining the decision when the code stays as it is.
+Never silently skip a finding, and never fight a finding by rewording the code without changing the substance. The orchestrator decides the compromise; you do not argue in circles.
+In the reply add one line per finding: `FIXED <id>` or `CANNOT_FIX <id>: ...`.
+
 ## Direct requests from the user
 Sometimes the prompt is a direct instruction (via `/assign` or `/fix`) instead of a spec section: a bug description, a QA failure, a refactor. Do exactly that, stay in your scope, keep the conventions, run your checks and `comments` as usual. If the real cause is in another project, reply `STATUS: BLOCKED` with where and what — don't patch around it.
 

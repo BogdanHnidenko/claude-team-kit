@@ -17,7 +17,7 @@ const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags', 'reason', 'by']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -311,6 +311,9 @@ function cmdDiff({ pos }) {
   const files = parts.flatMap((p) => p.files);
   const dir = taskDir(root, id);
   fs.mkdirSync(dir, { recursive: true });
+  // попередній звіт претестера лишається поруч (review.prev.json), щоб наступний раунд бачив, що вже було знайдено
+  const oldReview = reviewFile(dir);
+  if (oldReview) { fs.copyFileSync(path.join(dir, oldReview), path.join(dir, 'review.prev.json')); fs.rmSync(path.join(dir, oldReview)); }
   fs.writeFileSync(path.join(dir, 'diff.patch'), patch ? patch + '\n' : '');
   fs.writeFileSync(path.join(dir, 'changed_files.txt'), files.length ? files.join('\n') + '\n' : '');
   st.auditHash = sha(parts.map((p) => `${p.r.key}\n${p.patch}`).join('\n\0\n'));
@@ -386,6 +389,79 @@ function cmdVerify({ pos, flags }) {
   if (failed) process.exit(1);
 }
 
+// ---- рев'ю претестера: знахідки, раунди, компроміси (waive) ----
+const SEVERITY_ALIAS = { critical: 'blocker', high: 'blocker', blocker: 'blocker', medium: 'major', major: 'major', low: 'minor', minor: 'minor', info: 'info' };
+
+/** Файл звіту претестера: review.json (старі задачі — security.json). */
+function reviewFile(dir) {
+  for (const f of ['review.json', 'security.json']) if (fs.existsSync(path.join(dir, f))) return f;
+  return null;
+}
+
+/** Номер поточного раунду рев'ю = кількість уже витрачених виправлень + 1. */
+function reviewRound(root, id) {
+  const t = readJson(tasksPath(root), { tasks: [] }).tasks.find((x) => x.id === id);
+  return ((t?.loops?.review ?? t?.loops?.security ?? 0) + 1);
+}
+
+/**
+ * Рахує «ефективний» вердикт рев'ю за знахідками (а не за словом агента):
+ *  - blocker блокує завжди;
+ *  - major блокує лише в перших раундах (pipeline.majorBlocksRounds, типово 2) — далі це технічний борг;
+ *  - minor/info та pre_existing (код поза цим diff) не блокують ніколи;
+ *  - знахідка з waiver (прийнятий компроміс) не блокує.
+ */
+function reviewState(root, ws, st, id) {
+  const dir = taskDir(root, id);
+  const file = reviewFile(dir);
+  const out = { file, round: reviewRound(root, id), blocking: [], waived: [], debt: [], notes: [], problems: [] };
+  if (!file) { out.problems.push('review.json is missing — run the reviewer'); return out; }
+  const rep = readJson(path.join(dir, file), null);
+  if (!rep || !Array.isArray(rep.findings)) { out.problems.push(`${file} is invalid (no "findings" array)`); return out; }
+  const majorRounds = ws.pipeline?.majorBlocksRounds ?? 2;
+  for (const f of rep.findings) {
+    const sev = SEVERITY_ALIAS[String(f.severity).toLowerCase()] ?? 'minor';
+    const item = { ...f, severity: sev };
+    const w = st.waivers?.[f.id];
+    if (f.pre_existing || sev === 'minor' || sev === 'info') { out.notes.push(item); continue; }
+    if (w && w.sig === `${f.file}|${f.category}`) { out.waived.push({ ...item, waiver: w }); continue; }
+    if (sev === 'major' && out.round > majorRounds) { out.debt.push(item); continue; }
+    out.blocking.push(item);
+  }
+  return out;
+}
+
+function cmdReview({ pos }) {
+  const id = pos[0] ?? die('Usage: review <task-id>');
+  const { root, ws } = loadWorkspace();
+  const st = loadState(root, id);
+  const r = reviewState(root, ws, st, id);
+  if (r.problems.length) die(r.problems.join('; '), 1);
+  log(`review round ${r.round}: ${r.blocking.length ? 'BLOCK' : 'PASS'} — blocking ${r.blocking.length}, accepted compromises ${r.waived.length}, tech debt ${r.debt.length}, notes ${r.notes.length}`);
+  for (const f of r.blocking) log(`  ✖ ${f.id} [${f.severity}] ${f.file ?? '?'}:${f.line ?? '?'} ${f.category ?? ''} — ${f.problem ?? f.impact ?? ''}`);
+  for (const f of r.waived) log(`  ⚖ ${f.id} accepted by ${f.waiver.by}: ${f.waiver.reason}`);
+  for (const f of r.debt) log(`  ⏳ ${f.id} [major → debt, round ${r.round}] ${f.file ?? '?'} — ${f.problem ?? ''}`);
+  if (r.blocking.length) process.exit(1);
+}
+
+/** Прийняти компроміс по знахідці: ПМ — лише для major; для blocker потрібна згода користувача (--by user). */
+function cmdWaive({ pos, flags }) {
+  const [id, fid] = pos;
+  if (!id || !fid) die('Usage: waive <task-id> <FINDING-ID> --reason "<why this is acceptable>" [--by pm|user]');
+  const reason = typeof flags.reason === 'string' && flags.reason.trim() ? flags.reason.trim() : die('--reason is required (what is accepted instead, and why)');
+  const by = flags.by === 'user' ? 'user' : 'pm';
+  const { root } = loadWorkspace();
+  const st = loadState(root, id);
+  const dir = taskDir(root, id);
+  const rep = readJson(path.join(dir, reviewFile(dir) ?? 'review.json'), null) ?? die('No review report for this task');
+  const f = rep.findings?.find((x) => x.id === fid) ?? die(`No finding "${fid}" in the review report`);
+  const sev = SEVERITY_ALIAS[String(f.severity).toLowerCase()] ?? 'minor';
+  if (sev === 'blocker' && by !== 'user') die(`${fid} is a blocker — only the user can accept it. Ask the user, then run again with --by user`, 2);
+  st.waivers = { ...(st.waivers ?? {}), [fid]: { sig: `${f.file}|${f.category}`, reason, by, at: now() } };
+  saveState(root, st);
+  log(`✔ ${fid} accepted as a compromise by ${by}: ${reason}`);
+}
+
 function cmdCommit({ pos, flags }) {
   const id = pos[0] ?? die('Usage: commit <task-id> -m "<conventional commit message>"');
   const msg = typeof flags.m === 'string' ? flags.m.trim() : die('Commit message required: -m "feat(scope): summary"');
@@ -398,9 +474,12 @@ function cmdCommit({ pos, flags }) {
   const dir = taskDir(root, id);
 
   const problems = [];
-  const sec = readJson(path.join(dir, 'security.json'), null);
-  if (sec?.verdict !== 'PASS') problems.push(`security.json verdict is ${sec?.verdict ?? 'missing'} (need PASS)`);
-  else if (!st.diffAt || fs.statSync(path.join(dir, 'security.json')).mtimeMs < Date.parse(st.diffAt)) problems.push('security.json is older than the last diff — re-run the audit');
+  const rv = reviewState(root, ws, st, id);
+  if (rv.problems.length) problems.push(...rv.problems);
+  else {
+    if (rv.blocking.length) problems.push(`review has ${rv.blocking.length} open blocking finding(s): ${rv.blocking.map((f) => f.id).join(', ')} — fix them or accept a compromise (waive)`);
+    if (!st.diffAt || fs.statSync(path.join(dir, rv.file)).mtimeMs < Date.parse(st.diffAt)) problems.push(`${rv.file} is older than the last diff — re-run the reviewer`);
+  }
   const targets = Array.isArray(st.qa) ? st.qa : st.qa === 'skip' ? [] : ['web'];
   for (const t of targets) {
     const qa = readJson(path.join(dir, QA_FILES[t]), null);
@@ -497,7 +576,7 @@ function cmdRollback({ pos }) {
 
 function cmdMark({ pos }) {
   const [id, ...kv] = pos;
-  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<security|qa|verify>] [depth=smoke|deep|exhaustive] [note=<text>]');
+  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<review|qa|verify>] [depth=smoke|deep|exhaustive] [note=<text>]');
   const { root, ws } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   const cur = db.tasks.find((t) => t.id === id) ?? die(`Unknown task "${id}"`);
@@ -538,16 +617,16 @@ function cmdStatus() {
   const { root } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   if (!db.tasks.length) return log('No tasks yet.');
-  table(['task', 'stage', 'status', 'services', 'loops', 'security', 'qa', 'verify', 'note'], db.tasks.map((t) => [
+  table(['task', 'stage', 'status', 'services', 'loops', 'review', 'qa', 'verify', 'note'], db.tasks.map((t) => [
     t.id, t.stage, t.status, (t.services ?? []).join(','),
     Object.entries(t.loops ?? {}).map(([k, v]) => `${k}:${v}`).join(' ') || '—',
-    verdictOf(root, t.id, 'security.json') ?? '-', verdictOf(root, t.id, 'qa.json') ?? '-', verdictOf(root, t.id, 'verify.json') ?? '-',
+    (verdictOf(root, t.id, 'review.json') ?? verdictOf(root, t.id, 'security.json') ?? '-'), verdictOf(root, t.id, 'qa.json') ?? '-', verdictOf(root, t.id, 'verify.json') ?? '-',
     t.note ?? '',
   ]));
 }
 
 function agentFor(type) {
-  return { frontend: 'team-frontend', mobile: 'team-mobile', backend: 'team-backend', worker: 'team-backend', library: 'team-backend', infra: 'team-devops (infra)', other: 'orchestrator' }[type];
+  return { frontend: 'team-frontend', mobile: 'team-mobile', backend: 'team-backend', worker: 'team-backend', library: 'team-backend', infra: 'team-backend (infra)', other: 'orchestrator' }[type];
 }
 function cmdServices({ flags }) {
   const { root, ws } = loadWorkspace();
@@ -576,12 +655,12 @@ function ownerOf(ws, file) {
     if ((p === '' || p === '.' || under(p)) && (!best || p.length > best.p.length)) best = { s, p };
   }
   const isInfra = /(^|\/)(Dockerfile[^/]*|\.dockerignore|(docker-)?compose[^/]*\.ya?ml)$/.test(f) || /^\.(github|gitlab)\//.test(f) || /^\.gitlab-ci/.test(f);
-  if (isInfra) return { agent: 'team-devops', mode: 'infra', service: best?.s.name };
+  if (isInfra) return { agent: 'team-backend', mode: 'infra', service: best?.s.name };
   if (!best) return { agent: 'orchestrator', why: 'outside any service' };
   const t = best.s.type;
   if (t === 'frontend') return { agent: 'team-frontend', service: best.s.name };
   if (t === 'mobile') return { agent: 'team-mobile', service: best.s.name };
-  if (t === 'infra') return { agent: 'team-devops', mode: 'infra', service: best.s.name };
+  if (t === 'infra') return { agent: 'team-backend', mode: 'infra', service: best.s.name };
   if (t === 'other') return { agent: 'orchestrator', service: best.s.name };
   return { agent: 'team-backend', service: best.s.name };
 }
@@ -1605,7 +1684,7 @@ function cmdDoctor() {
   const home = path.join(os.homedir(), '.claude');
   const settings = readJson(path.join(home, 'settings.json'), {});
   JSON.stringify(settings.hooks ?? {}).includes('pipeline.mjs') ? ok('guard hook installed') : warn('guard hook not found in ~/.claude/settings.json — re-run install.sh');
-  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-security', 'team-qa', 'team-qa-mobile', 'team-devops']) {
+  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-qa', 'team-qa-mobile']) {
     fs.existsSync(path.join(home, 'agents', `${a}.md`)) ? null : warn(`agent ${a} not installed in ~/.claude/agents`);
   }
   const root = findRoot(process.cwd());
@@ -1656,6 +1735,8 @@ const HELP = `Claude Team Kit — ${PL} <command>
   services [--type t] [--json]   list workspace services with their links (uses / used by)
   start <id> <svc,..|all>        create feat/<id> branches in affected repos [--no-qa] [--allow-dirty]
   diff <id|adhoc>                build the blind-audit diff (.pipeline/<id>/diff.patch)
+  review <id>                    verdict of the pretester's report: blocking / accepted compromises / tech debt (exit 1 if blocking)
+  waive <id> <F-id> --reason ".." [--by pm|user]   accept a finding as a compromise (blocker needs --by user)
   owner <files..> | --file f     which agent owns these files
   verify <id> [svc,..]           comments + lint/typecheck/test/build per service → verify.json
   verify <id> --only test,lint   partial run (any subset, incl. comments) → verify-partial.json, not a gate
@@ -1693,7 +1774,7 @@ const COMMANDS = {
   playbook: () => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),

@@ -20,7 +20,12 @@ List only the services that change, in build order (providers before consumers).
 ### <web> (frontend)
 - **Route / place in UI:**
 - **States:** idle, loading, success, validation error, server error, empty.
-- **Required `data-testid`:** ...
+- **Required `data-testid`:** ... (names fixed here by the PM: developers use exactly these, the tester relies on them)
+
+### <app> (mobile, if any)
+- **Screen / place in the app:**
+- **States:** idle, loading, success, validation error, server error, offline, empty.
+- **Required `testID`:** ... (fixed here by the PM, same rule)
 
 ## 3. Contracts
 - **HTTP:** `contracts/<service>.openapi.yaml` — paths added/changed, request/response schemas.
