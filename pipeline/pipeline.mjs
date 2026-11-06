@@ -17,7 +17,7 @@ const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -407,7 +407,8 @@ function cmdCommit({ pos, flags }) {
     if (qa?.verdict !== 'PASS') problems.push(`${QA_FILES[t]} verdict is ${qa?.verdict ?? 'missing'} (need PASS)`);
     if (t === 'mobile') {
       const sims = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^sim-(ios|android)\.json$/.test(f)) : [];
-      if (!sims.length) problems.push('no simulator run found (sim-ios.json / sim-android.json)');
+      const app = st.services.map((n) => getService(ws, n)).find((x) => x.type === 'mobile') ?? ws.services.find((x) => x.type === 'mobile');
+      for (const p of app ? platformsFor(ws, app, st.depth ?? taskDepth(root, ws, id)) : []) if (!sims.includes(`sim-${p}.json`)) problems.push(`no simulator run for ${p} (required for this depth)`);
       for (const f of sims) { const v = readJson(path.join(dir, f), null)?.verdict; if (v !== 'PASS') problems.push(`${f} verdict is ${v ?? 'missing'} (need PASS)`); }
     }
   }
@@ -880,6 +881,25 @@ function listFiles(dir, re, out = []) {
 }
 const LOG_ERROR = /(\bE\/|\berror\b|exception|fatal|unhandled|TypeError|ReferenceError|Invariant Violation|Possible Unhandled Promise)/i;
 
+// name + tags of every Maestro flow file in a folder (one file = one case).
+function flowMeta(dir) {
+  return listFiles(dir, /\.ya?ml$/i).filter((f) => !f.includes(`${path.sep}_shared${path.sep}`)).map((f) => {
+    const head = readText(f).split(/^---\s*$/m)[0];
+    const name = /^name:\s*["']?(.+?)["']?\s*$/m.exec(head)?.[1] ?? path.basename(f).replace(/\.ya?ml$/i, '');
+    const tagBlock = /tags:\s*\[([^\]]*)\]/.exec(head)?.[1] ?? [...head.matchAll(/^\s*-\s*([\w-]+)\s*$/gm)].map((m) => m[1]).join(',');
+    return { file: f, name, base: path.basename(f).replace(/\.ya?ml$/i, ''), tags: tagBlock.split(',').map((t) => t.trim().replace(/['"]/g, '')).filter(Boolean) };
+  });
+}
+// Which platforms a QA run must cover: exhaustive → all, otherwise the primary platform only (configurable).
+function platformsFor(ws, svc, depth) {
+  const all = svc.mobile.platforms;
+  const explicit = ws.qa?.platformsByDepth?.[depth];
+  if (Array.isArray(explicit) && explicit.length) return explicit.filter((p) => all.includes(p));
+  if (depth === 'exhaustive') return all;
+  const primary = svc.mobile.primaryPlatform ?? (process.platform === 'darwin' && all.includes('ios') ? 'ios' : all.includes('android') ? 'android' : all[0]);
+  return [primary];
+}
+const fmtMs = (ms) => (ms >= 60000 ? `${Math.floor(ms / 60000)}m${String(Math.round((ms % 60000) / 1000)).padStart(2, '0')}s` : `${Math.round(ms / 1000)}s`);
 async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) {
   const m = svc.mobile;
   const cwd = path.resolve(root, svc.path);
@@ -888,11 +908,17 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
   const outDir = path.join(taskDir(root, id), tag);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
-  const report = { task: id, service: svc.name, platform, verdict: 'FAIL', device: null, built: false, flows: [], logErrors: [], screenshots: [], at: now() };
+  const report = { task: id, service: svc.name, platform, verdict: 'FAIL', device: null, built: false, flows: [], logErrors: [], screenshots: [], timings: {}, at: now() };
   const write = () => writeJson(path.join(taskDir(root, id), `${tag}.json`), report);
+  const mainFile = path.join(taskDir(root, id), `sim-${platform}.json`);
+  const previous = custom ? null : readJson(mainFile, null);
+  let t0 = Date.now();
+  const phase = (name) => { report.timings[name] = Date.now() - t0; t0 = Date.now(); };
+  const appHash = fingerprint(st, auditSpecs(ws)); // app code only (tests/docs excluded)
   try {
     // 1. simulator
     const device = platform === 'ios' ? await bootIos(m.device.ios) : await bootAndroid(m.device.android);
+    phase('boot');
     report.device = device.name;
     const env = { E2E: '1', E2E_PLATFORM: platform, DEVICE_ID: device.id, DEVICE_NAME: device.name };
     // 2. backends (+ metro) with dev.start/dev.url; on Android, map their ports into the emulator
@@ -900,11 +926,12 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
     for (const s of ws.services.filter((x) => ['backend', 'worker'].includes(x.type) && x.dev?.start && (!needed || needed.has(x.name)))) {
       await startBackground(s.name, s.dev.start, path.resolve(root, s.path), s.dev.url, outDir, {}, started);
     }
-    if (m.metro?.start) await startBackground(`${svc.name}-metro`, m.metro.start, cwd, m.metro.url, outDir, env, started);
+    if (m.metro?.start) await startBackground(`${svc.name}-metro`, m.metro.start, cwd, m.metro.url, outDir, { ...env, CI: '1', EXPO_PUBLIC_E2E: '1', RN_E2E: '1' }, started);
     if (platform === 'android') {
       const ports = [...ws.services.map((s) => s.dev?.url), m.metro?.url].map((u) => u && portOf(u)).filter(Boolean);
       for (const p of new Set(ports)) tool('adb', ['-s', device.id, 'reverse', `tcp:${p}`, `tcp:${p}`]);
     }
+    phase('backends');
     // 3. build + install only when native inputs (or, without metro, any app code) changed
     const cacheFile = path.join(root, '.pipeline', '_sim', `${svc.name}-${platform}.json`);
     const fp = buildFingerprint(root, st, svc);
@@ -924,6 +951,7 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
       writeJson(cacheFile, { fingerprint: fp, device: device.id, at: now() });
       report.built = true;
     } else log(`= ${svc.name} ${platform} build is up to date — reusing installed app`);
+    phase('build');
     // 4. app logs
     const logFile = path.join(outDir, 'device.log');
     const logOut = fs.openSync(logFile, 'w');
@@ -936,24 +964,60 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
     // 5. maestro
     const flowsDir = custom ? path.resolve(root, custom) : path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
     if (!fs.existsSync(flowsDir)) fail(`no flows in ${posix(path.relative(root, flowsDir))}/ — write Maestro flows there first`);
+    const meta = flowMeta(flowsDir);
+    let targets = [flowsDir];
+    let subset = false;
+    if (typeof flags.tags === 'string') {
+      const want = flags.tags.split(',').map((x) => x.trim());
+      const picked = meta.filter((f) => f.tags.some((t) => want.includes(t)) || want.includes(f.base));
+      if (!picked.length) fail(`no flows tagged ${flags.tags} in ${posix(path.relative(root, flowsDir))}/`);
+      targets = picked.map((f) => f.file); subset = true;
+    }
+    if (flags['rerun-failed']) {
+      const policy = ws.qa?.retest ?? 'failed+smoke';
+      // failed last time + flows that became stale because the app code changed since they ran
+      const failedNames = new Set((previous?.flows ?? []).filter((f) => f.status !== 'passed'
+        || (f.appHash !== appHash && (policy === 'all' || (f.tags ?? []).includes('happy')))).map((f) => f.name));
+      for (const f of meta) if (!(previous?.flows ?? []).some((r) => r.name === f.name || r.name === f.base)) failedNames.add(f.name); // never run yet
+      const picked = meta.filter((f) => failedNames.has(f.name) || failedNames.has(f.base));
+      if (!picked.length) { log(`= nothing failed in the last ${platform} run — nothing to re-run`); report.flows = previous?.flows ?? []; }
+      targets = picked.map((f) => f.file); subset = true;
+      if (!picked.length) targets = [];
+    }
     const junit = path.join(outDir, 'report.xml');
-    const args = ['--device', device.id, 'test', flowsDir, '--format', 'junit', '--output', junit, '--test-output-dir', outDir,
+    const args = ['--device', device.id, 'test', ...targets, '--format', 'junit', '--output', junit, '--test-output-dir', outDir,
       '-e', `APP_ID=${m.appId[platform]}`, '-e', `PLATFORM=${platform}`];
-    log(`▶ maestro test ${posix(path.relative(root, flowsDir))}/ on ${device.name}`);
-    const t = spawnSync('maestro', args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, timeout: (ws.e2eMobile?.timeoutSec ?? 1800) * 1000 });
+    log(`▶ maestro test ${subset ? `${targets.length} flow(s)` : `${posix(path.relative(root, flowsDir))}/`} on ${device.name}`);
+    const t = targets.length ? spawnSync('maestro', args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28, timeout: (ws.e2eMobile?.timeoutSec ?? 1800) * 1000 }) : { status: 0, stdout: '', stderr: '' };
     if (t.error) fail(`maestro: ${t.error.message}`);
     fs.writeFileSync(path.join(outDir, 'maestro.log'), `${t.stdout ?? ''}\n${t.stderr ?? ''}`);
     await sleep(1500);
     try { process.kill(-logger.pid, 'SIGTERM'); } catch { /* gone */ }
     // 6. results
-    report.flows = fs.existsSync(junit) ? parseJunit(fs.readFileSync(junit, 'utf8')) : [];
+    const ran = fs.existsSync(junit) ? parseJunit(fs.readFileSync(junit, 'utf8')) : [];
+    for (const f of ran) { const mm = meta.find((x) => x.name === f.name || x.base === f.name); f.tags = mm?.tags ?? []; f.file = mm ? posix(path.relative(root, mm.file)) : null; f.appHash = appHash; }
+    phase('tests');
+    // subset run: merge into the full report of this platform (latest result per flow wins)
+    if (subset && previous?.flows?.length) {
+      const byName = new Map(previous.flows.map((f) => [f.name, f]));
+      for (const f of ran) byName.set(f.name, f);
+      report.flows = [...byName.values()];
+      report.merged = { reran: ran.map((f) => f.name), kept: previous.flows.length - ran.filter((f) => previous.flows.some((p) => p.name === f.name)).length };
+    } else report.flows = ran.length ? ran : report.flows;
+    // freshness: after an app change, every failed flow and every "happy" flow must have run on the current app code
+    const policy = ws.qa?.retest ?? 'failed+smoke';
+    report.stale = report.flows.filter((f) => f.appHash !== appHash && (policy === 'all' || (f.tags ?? []).includes('happy'))).map((f) => f.name);
     report.logErrors = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => LOG_ERROR.test(l)).slice(0, 50);
     report.screenshots = listFiles(outDir, /\.png$/i).map((f) => posix(path.relative(root, f)));
     report.log = `.pipeline/${id}/${tag}/maestro.log`;
     report.deviceLog = `.pipeline/${id}/${tag}/device.log`;
     if (custom) report.flowsDir = posix(path.relative(root, flowsDir));
+    // every flow file of the task must have a result (new files added after the last full run, deleted ones dropped)
+    const names = new Set(meta.flatMap((f) => [f.name, f.base]));
+    report.flows = report.flows.filter((f) => names.has(f.name));
+    report.notRun = custom ? [] : meta.filter((f) => !report.flows.some((r) => r.name === f.name || r.name === f.base)).map((f) => f.base);
     const failedFlows = report.flows.filter((f) => f.status === 'failed');
-    report.verdict = t.status === 0 && report.flows.length && !failedFlows.length ? 'PASS' : 'FAIL';
+    report.verdict = report.flows.length && !failedFlows.length && !report.stale.length && !report.notRun.length && (subset || t.status === 0) ? 'PASS' : 'FAIL';
     if (!report.flows.length) report.error = `maestro produced no results (exit ${t.status}): ${`${t.stdout}\n${t.stderr}`.trim().split('\n').slice(-10).join(' | ')}`;
   } catch (e) {
     if (!(e instanceof SimError)) throw e;
@@ -986,12 +1050,14 @@ async function cmdScreen({ flags }) {
   } catch (e) { if (e instanceof SimError) die(e.message); throw e; }
 }
 async function cmdSim({ pos, flags }) {
-  const id = pos[0] ?? die('Usage: sim <task-id> [--platform ios|android|all] [--service name] [--rebuild] [--skip-build]');
+  const id = pos[0] ?? die('Usage: sim <task-id> [--platform ios|android|all] [--tags AC-1,happy] [--rerun-failed] [--service name] [--rebuild] [--skip-build] [--flows dir]');
   const { root, ws } = loadWorkspace();
   const st = loadState(root, id);
   const mobiles = (flags.service ? [getService(ws, flags.service)] : st.services.map((n) => getService(ws, n)).filter((s) => s.type === 'mobile'));
   const svc = mobiles[0] ?? ws.services.find((s) => s.type === 'mobile') ?? die('No mobile service in this workspace.');
-  const wanted = !flags.platform || flags.platform === 'all' ? svc.mobile.platforms : [flags.platform];
+  const depth = taskDepth(root, ws, id);
+  const wanted = flags.platform === 'all' ? svc.mobile.platforms : flags.platform ? [flags.platform] : platformsFor(ws, svc, depth);
+  if (!flags.platform) log(`platforms for depth "${depth ?? '?'}": ${wanted.join(', ')}  (all: --platform all)`);
   const missing = (bins) => bins.filter((b) => !which(b));
   const results = [];
   for (const platform of wanted) {
@@ -1005,7 +1071,10 @@ async function cmdSim({ pos, flags }) {
     finally { stopAll(started); }
     results.push(r);
     const failedFlows = r.flows.filter((f) => f.status === 'failed');
-    log(`${r.verdict === 'PASS' ? '✔' : '✖'} ${platform} (${r.device ?? '?'}): ${r.flows.length - failedFlows.length}/${r.flows.length} flows passed${r.built ? ', app rebuilt' : ''}`);
+    log(`${r.verdict === 'PASS' ? '✔' : '✖'} ${platform} (${r.device ?? '?'}): ${r.flows.length - failedFlows.length}/${r.flows.length} flows passed${r.built ? ', app rebuilt' : ''}${r.merged ? ` (re-ran ${r.merged.reran.length}, kept ${r.merged.kept} earlier results)` : ''}`);
+    log(`   time: ${Object.entries(r.timings ?? {}).map(([k, v]) => `${k} ${fmtMs(v)}`).join(' · ')}`);
+    if (r.notRun?.length) log(`   ✖ not run yet: ${r.notRun.slice(0, 8).join(', ')}${r.notRun.length > 8 ? '…' : ''}  (--tags <AC-n> or a full run)`);
+    if (r.stale?.length) log(`   ✖ app code changed since these flows ran — re-run them: ${r.stale.slice(0, 8).join(', ')}${r.stale.length > 8 ? '…' : ''}  (--rerun-failed)`);
     for (const f of failedFlows) log(`   ✖ ${f.name}: ${f.error}`);
     if (r.error) log(`   ✖ ${r.error}`);
     if (r.logErrors.length) log(`   ⚠ ${r.logErrors.length} error line(s) in device log — see ${r.deviceLog}`);
@@ -1134,13 +1203,25 @@ function detectService(root, dir, notes) {
       } catch { /* no simulators */ }
     }
     if (which('emulator')) device.android = spawnSync('emulator', ['-list-avds'], { encoding: 'utf8' }).stdout?.split('\n').map((x) => x.trim()).filter(Boolean)[0] ?? null;
-    svc.mobile = {
-      framework: expo ? 'expo' : 'bare', platforms, appId, device,
-      build: expo
-        ? { ios: 'npx expo run:ios --configuration Release --no-bundler --device "{device}"', android: 'npx expo run:android --variant release --no-bundler' }
-        : { ios: 'npx react-native run-ios --mode Release --simulator "{device}" --no-packager', android: 'npx react-native run-android --mode release --no-packager' },
-      rebuildOn: 'any',
-    };
+    const fast = !deps['expo-dev-client']; // a dev-client app opens its launcher instead of the bundle — use release builds there
+    svc.mobile = fast
+      ? {
+        framework: expo ? 'expo' : 'bare', mode: 'fast', platforms, appId, device,
+        build: expo
+          ? { ios: 'npx expo run:ios --configuration Debug --no-bundler --device "{device}"', android: 'npx expo run:android --variant debug --no-bundler' }
+          : { ios: 'npx react-native run-ios --mode Debug --simulator "{device}" --no-packager', android: 'npx react-native run-android --mode debug --no-packager' },
+        metro: { start: expo ? 'npx expo start --port 8081' : 'npx react-native start --port 8081', url: 'http://localhost:8081/status' },
+        rebuildOn: 'native',
+      }
+      : {
+        framework: expo ? 'expo' : 'bare', mode: 'release', platforms, appId, device,
+        build: expo
+          ? { ios: 'npx expo run:ios --configuration Release --no-bundler --device "{device}"', android: 'npx expo run:android --variant release --no-bundler' }
+          : { ios: 'npx react-native run-ios --mode Release --simulator "{device}" --no-packager', android: 'npx react-native run-android --mode release --no-packager' },
+        rebuildOn: 'any',
+      };
+    if (fast) notes.push(`${name}: fast test mode — the app is built once (debug) and JS changes load from Metro without rebuilding; hide LogBox in tests: if (process.env.EXPO_PUBLIC_E2E === '1') LogBox.ignoreAllLogs()`);
+    else notes.push(`${name}: expo-dev-client found — release builds are used for tests (every JS change = rebuild, slower)`);
     for (const pf of platforms) {
       if (!appId[pf]) notes.push(`${name}: ${pf} app id not found (${expo ? `app.json → expo.${pf === 'ios' ? 'ios.bundleIdentifier' : 'android.package'}` : 'native project'}) — fill mobile.appId.${pf}`);
       if (!device[pf]) notes.push(`${name}: no ${pf === 'ios' ? 'iOS simulator' : 'Android emulator (AVD)'} found — create one and fill mobile.device.${pf}`);
@@ -1582,6 +1663,8 @@ const HELP = `Claude Team Kit — ${PL} <command>
   sim <id> [--platform ios|android|all] [--service app] [--rebuild] [--skip-build] [--flows dir]
                                  boot simulator, build/install app, start backends, run Maestro flows
                                  (--flows: run another folder, e.g. exploration or full regression; not a gate)
+                                 (--tags AC-1,happy: only matching flows; --rerun-failed: only what failed last time — merged into the report)
+                                 (no --platform: platforms for the task's depth — primary only unless exhaustive)
   screen [--platform ios|android] what is on the simulator now: screenshot + visible elements (testID, text)
   mark <id> stage=N status=S [loop=name] [note=..]   update task state; exit 3 at loop limit
   commit <id> -m "feat(x): .."   gated commit in every affected repo (no push)

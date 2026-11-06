@@ -36,9 +36,10 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Write `docs/specs/<id>.md` from `docs/specs/_TEMPLATE.md`: per-service sections, contracts, infra, numbered acceptance criteria, and the **Test focus** section (what changed for the user, what could break nearby, what not to re-test, risky cases).
 - Update contracts under the manifest's `contracts.path` (OpenAPI per HTTP service, `events/` for messages between services).
 - **QA depth** — if the task needs QA and the depth is not given in the request and `qa.defaultDepth` in the manifest is missing or `"ask"`, ask the user together with your other questions (AskUserQuestion, one question, three options):
-  - `smoke` — **Поверхневе**: працює чи ні, 1 сценарій на критерій (швидко);
-  - `deep` — **Поглиблене**: + помилки, межі, неповні форми, навігація, переривання (≥ 4 на критерій);
-  - `exhaustive` — **Дуже ретельне**: усе, що може зробити людина — дані, жести/свайпи, мережа, стани, доступність, вигляд (≥ 8 на критерій, найдовше).
+  - `smoke` — **Поверхневе** (~5–15 хв): працює чи ні, 1 сценарій на критерій, одна платформа;
+  - `deep` — **Поглиблене** (~20–40 хв): + помилки, межі, неповні форми, навігація, переривання, ≥ 4 на критерій, одна платформа;
+  - `exhaustive` — **Дуже ретельне** (~1–2 год): усе, що може зробити людина — дані, свайпи, мережа, стани, доступність, вигляд, ≥ 8 на критерій, обидві платформи.
+  Show these time estimates in the options (they assume the app build is cached; the very first iOS build adds 10–20 min). Recommend `deep` for normal features and `exhaustive` before a release.
   Words in the request map too: «швидко/поверхнево» → smoke, «поглиблено/детально» → deep, «дуже ретельно/все можливе/максимально» → exhaustive. Save it: `$PL mark <id> depth=<depth>`.
 - Show the user a ≤ 8-line summary. Continue without waiting unless you asked questions.
 - `$PL mark <id> stage=1 status=IN_PROGRESS note="spec ready"`
@@ -55,6 +56,8 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Write every answer into the spec's **Decisions** table (question, answer, who asked, date), then call the agent again with: the answers + "continue". If the user is away (unattended run), take the agent's recommendation, record it in Decisions as "assumed", and list it in the final report.
 - `ASSUMPTIONS:` in an agent's reply → show them to the user in the stage line; if the user disagrees, treat it as a fix request (`/fix`).
 - `$PL mark <id> stage=2 status=IN_PROGRESS note="build done"`
+
+**3+4. SECURITY and QA run in parallel** — after BUILD, call `team-security` (stage 3) and the QA agent(s) (stage 4) in ONE message (several Agent calls at once); they don't depend on each other. If either fails, fix, then re-run only what is stale (the commit gate tells you which).
 
 **3. SECURITY (blind)**
 - `$PL diff <id>`

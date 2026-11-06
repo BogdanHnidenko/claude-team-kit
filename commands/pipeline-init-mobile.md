@@ -34,4 +34,6 @@ For every web or mobile client offer to create its testing guide `docs/testing/<
 
 Set `"qa": { "defaultDepth": "ask" }` unless it exists (the orchestrator asks the depth per task). If I say I always want one level, use `smoke`, `deep` or `exhaustive` instead.
 
+**Fast test mode for mobile apps.** If an existing mobile service has no `"mode": "fast"` (release builds, `rebuildOn: "any"`) and the app does not use `expo-dev-client`, offer to switch it — it is the biggest speed-up for QA: debug build once, JS loaded from Metro, rebuild only on native changes. The fast block (Expo): `"mode": "fast"`, `build.ios: npx expo run:ios --configuration Debug --no-bundler --device "{device}"`, `build.android: npx expo run:android --variant debug --no-bundler`, `"metro": { "start": "npx expo start --port 8081", "url": "http://localhost:8081/status" }`, `"rebuildOn": "native"` (bare RN: `npx react-native run-ios --mode Debug --simulator "{device}" --no-packager`, `run-android --mode debug --no-packager`, metro `npx react-native start --port 8081`). Also suggest hiding LogBox in tests: `if (process.env.EXPO_PUBLIC_E2E === '1') LogBox.ignoreAllLogs()`. Then prove it with the smoke test.
+
 Finish with: what was created, what is missing, and a first command to try, e.g. `/feature <small mobile feature>`.
