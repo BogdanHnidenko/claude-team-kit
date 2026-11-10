@@ -7,9 +7,9 @@ Read this whole playbook before designing tests. The task's **depth** decides ho
 
 | Depth | Meaning | Min. cases per AC | Categories that must be covered in the task (tags) |
 |---|---|---|---|
-| `smoke` (поверхневе) | does the feature work at all | 1 | `happy` |
-| `deep` (поглиблене) | normal + wrong use, edges, interruptions | 4 | `happy`, `negative`, `boundary`, `partial`, `navigation`, `interrupt` |
-| `exhaustive` (дуже ретельне) | everything a real person could do | 8 | `happy`, `negative`, `boundary`, `partial`, `data`, `navigation`, `gesture`, `interrupt`, `network`, `state`, `a11y`, `visual` |
+| `smoke` (поверхневе) | does the feature work at all | 1 | `happy` (+ `responsive` for web, 3 widths) |
+| `deep` (поглиблене) | normal + wrong use, edges, interruptions | 4 | `happy`, `negative`, `boundary`, `partial`, `navigation`, `interrupt` (+ `responsive` for web, 7 widths) |
+| `exhaustive` (дуже ретельне) | everything a real person could do | 8 | `happy`, `negative`, `boundary`, `partial`, `data`, `navigation`, `gesture`, `interrupt`, `network`, `state`, `a11y`, `visual` (+ `responsive` for web, 13 widths) |
 
 - Get the depth: `node ~/.claude/pipeline/pipeline.mjs current --json` → `depth` (or the depth given in your prompt).
 - A category that truly cannot apply (e.g. `partial` when the feature has no form) must be declared in your report under `"not_applicable": { "partial": "reason" }`. The coverage check accepts it only with a reason.
@@ -116,6 +116,16 @@ Maestro examples:
 - Every icon-only button has an accessibility label; tap targets are not tiny.
 - Look at every screenshot: cut text, overlapping elements, wrong colours in dark mode, keyboard covering inputs, notch/safe-area problems, untranslated strings, placeholder text like `lorem` or `undefined`.
 
+### 3.9 Responsive layout (web, category `responsive` — required at every depth)
+Every web task that touches UI is checked at several screen widths. The helper does the mechanical part (overflow, overlap, clipping, covered controls); you choose the pages, states and extra manual looks.
+- **Widths per depth** (min. distinct widths, counted by the script from `.pipeline/<id>/layout.jsonl`): `smoke` 3 (`WIDTHS.smoke` = 375, 768, 1280) · `deep` 7 (`WIDTHS.deep` = 320, 375, 414, 768, 1024, 1280, 1536) · `exhaustive` 13 (`WIDTHS.exhaustive` = 320 … 1920, includes 360, 390, 480, 600, 834, 1440).
+- **What to open at each width:** every screen/route the task changed, **and** each state of it that can change the layout: empty, loading, error banner, success message, validation errors visible, long content, many items, open dropdown/modal/menu/drawer, expanded accordion.
+- **Hostile content** (`deep`+): very long unbroken word (`Supercalifragilistic…` 60+ chars), long email, long Cyrillic name, number with many digits, 3-line title, text with emoji; and the opposite — 1 character.
+- **Edge sizes** (`exhaustive`): phone landscape 844×390, short window 1280×500, tablet portrait/landscape (768×1024, 1024×768), page zoomed to 200% (browser zoom: `page.evaluate(() => { document.body.style.zoom = '2' })` or a 640px-wide viewport), large text (`html { font-size: 20px }`), a Safari-like engine when available (`QA_WEBKIT=1`).
+- **What counts as a bug:** horizontal page scroll; anything outside the screen edge; text or buttons spilling out of their card; text cut without an ellipsis; two elements on top of each other; a button/input/link covered by a header, banner, cookie bar or modal; a menu that does not collapse or cannot be opened on a narrow screen; tap target < 24px on mobile widths; images stretched, cropped or broken; fixed header covering the content below it; keyboard (focus) landing on something hidden.
+- **Look yourself too.** The helper attaches a full-page screenshot per width: open the first, middle and last width of each page with Read and judge what a script cannot: ugly spacing, unreadable contrast, misaligned columns, a table that is unusable on a phone, text too small.
+- **Report** each problem with the width, the element selector, the screenshot and the severity (`major` when a control is unusable or content unreachable, `minor` when it is merely ugly).
+
 ## 4. Writing mobile flows (Maestro)
 
 - **One case = one file**: `<e2eMobile.path>/<id>/AC-<n>-<category>-<short-name>.yaml`.
@@ -151,6 +161,7 @@ tags: [AC-1, negative]
 
 - Title format: `test('AC-1 [partial] без email', …)` — the `[category]` in brackets is how coverage is counted.
 - Data-driven cases with a table + `for … of` loop are fine, but each row must be its own `test()` with its own title and tag.
+- **Layout at many widths:** import the helper (`e2e/_helpers/layout-checks.ts`; if it is missing run `node ~/.claude/pipeline/pipeline.mjs template layout > <e2e.path>/_helpers/layout-checks.ts`). Pattern: `await eachWidth(page, WIDTHS.deep, async (w) => { await checkLayout(page, testInfo, { name: \`profile-${w}\` }); });` — one `test('AC-1 [responsive] …')` per screen/state. Use `WIDTHS[depth]`. `checkLayout` fails the test on overflow/overlap/clipping and records the width for the coverage check.
 - Use `page.route` to simulate server errors/slow network, `context.setOffline(true)` for offline, `page.setViewportSize` for small screens, keyboard-only navigation (`Tab`, `Enter`, `Escape`).
 
 ## 6. Report honestly

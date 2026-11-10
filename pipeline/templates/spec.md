@@ -48,6 +48,7 @@ List only the services that change, in build order (providers before consumers).
 - **What changed for the user:** screens / flows / API that are new or different.
 - **What could break nearby:** neighbouring flows that share the same screens, data or API (e.g. auth change → login, logout, session expiry, deep links into protected screens).
 - **Not to re-test:** unrelated parts of the app.
+- **Screens and states to check at different widths (web):** which pages / states change the layout (empty, error, long text, open menu or modal, many items); anything known to be tight on a phone.
 - **Risky cases specific to this feature:** e.g. offline while saving, double submit, very long input.
 
 ## 7. Decisions (questions answered by the user)

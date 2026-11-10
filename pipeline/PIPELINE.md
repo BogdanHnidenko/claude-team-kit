@@ -82,6 +82,7 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 - Pass the depth in the prompt: `Task <id>. Spec: docs/specs/<id>.md. Depth: <depth>.` (set it first if missing — see PLAN).
 - `web` → call `team-qa` (writes `qa.json`).
 - `mobile` → call `team-qa-mobile` (writes `qa-mobile.json`, runs `$PL sim`). Run the two QA agents one after another, not in parallel — they start the same backends.
+- Web QA always includes a responsive-layout check at several screen widths (3 / 7 / 13 widths for smoke / deep / exhaustive): overflow, overlap, clipping, covered controls. List the tight screens and states in the spec's Test focus.
 - Pass the tester only the spec — no diff, no developer reports. The tester finds elements by the testIDs in the spec and by looking at the real screen.
 - Any verdict `FAIL` → fix loop → since code changed, repeat stage 3, then stage 4.
 - `reason: "ENV"` (simulator/emulator/tools missing, build failed) is not a code bug: show the user the error and what to install/fix; don't burn fix rounds on it.

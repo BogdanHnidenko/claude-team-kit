@@ -249,6 +249,9 @@ function verdictOf(root, id, file) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')).verdict ?? '?'; } catch { return 'INVALID'; }
 }
 
+/** Режим гілок: 'current' (типово) — комітимо в поточну гілку; 'feature' — окрема гілка feat/<id>. */
+function branchMode(ws) { return ws.pipeline?.branchMode === 'feature' ? 'feature' : 'current'; }
+
 // ------------------------------------------------------------- commands
 function cmdStart({ pos, flags }) {
   const [id, svcArg] = pos;
@@ -259,25 +262,28 @@ function cmdStart({ pos, flags }) {
   const services = svcArg === 'all' ? ws.services.map((s) => s.name) : [...new Set(svcArg.split(',').map((s) => s.trim()).filter(Boolean))];
   services.forEach((n) => getService(ws, n));
   const repos = groupRepos(root, ws, services);
+  const own = branchMode(ws) === 'feature'; // 'feature': окрема гілка feat/<id>; типово 'current': працюємо в поточній гілці кожного репозиторію
   const branch = `${ws.pipeline?.branchPrefix ?? 'feat/'}${id}`;
 
   for (const r of repos) { // check everything before touching anything
     if (git(r.root, ['rev-parse', '--verify', '-q', 'HEAD'], { allowFail: true }).status !== 0) die(`${label(r)}: no commits yet — make an initial commit first.`);
     const dirty = gitOut(r.root, ['status', '--porcelain', '--', ...scope(r)]);
     if (dirty && !flags['allow-dirty']) die(`${label(r)} has uncommitted changes:\n${dirty}\nCommit or stash them first (or pass --allow-dirty).`);
-    if (git(r.root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { allowFail: true }).status === 0) die(`${label(r)}: branch ${branch} already exists.`);
+    if (own && git(r.root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { allowFail: true }).status === 0) die(`${label(r)}: branch ${branch} already exists.`);
+    if (!own && gitOut(r.root, ['rev-parse', '--abbrev-ref', 'HEAD']) === 'HEAD') die(`${label(r)}: detached HEAD — switch to a branch first (git switch <branch>); the work is committed to the current branch.`);
   }
   for (const r of repos) {
     r.base = gitOut(r.root, ['rev-parse', 'HEAD']);
     r.fromBranch = gitOut(r.root, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    r.branch = branch;
-    git(r.root, ['checkout', '-q', '-b', branch]);
+    if (own) { r.branch = branch; git(r.root, ['checkout', '-q', '-b', branch]); }
+    else r.branch = r.fromBranch; // без нової гілки: працюємо там, де користувач зараз
   }
   const qa = flags['no-qa'] ? [] : qaTargets(ws, services);
   saveState(root, { id, services, repos, qa, createdAt: now() });
-  updateTask(root, id, { services, branch, stage: 1, status: 'IN_PROGRESS', loops: {}, note: null });
-  log(`✔ Task ${id} started on ${branch}`);
-  for (const r of repos) log(`  ${label(r).padEnd(28)} base ${r.base.slice(0, 8)}  services: ${r.services.join(', ') || '— (specs/contracts/e2e)'}`);
+  updateTask(root, id, { services, branch: own ? branch : [...new Set(repos.map((r) => r.branch))].join(', '), stage: 1, status: 'IN_PROGRESS', loops: {}, note: null });
+  log(own ? `✔ Task ${id} started on new branch ${branch}` : `✔ Task ${id} started — working in the current branch (no new branch created)`);
+  for (const r of repos) log(`  ${label(r).padEnd(28)} branch ${r.branch}  base ${r.base.slice(0, 8)}  services: ${r.services.join(', ') || '— (specs/contracts/e2e)'}`);
+  if (!own) for (const r of repos) if (/^(main|master|production|prod|release)$/.test(r.branch)) log(`⚠ ${label(r)} is on "${r.branch}" — the commit will go straight there. Switch branch first if that is not what you want.`);
   log(`  QA: ${qa.length ? qa.map((q) => (q === 'web' ? 'web → team-qa' : 'mobile → team-qa-mobile')).join(', ') : 'skipped (--no-qa)'}`);
 }
 // Which QA agents a task needs: web for web frontends, mobile for apps;
@@ -567,11 +573,11 @@ function cmdRollback({ pos }) {
     if (dirty) git(r.root, ['stash', 'push', '--include-untracked', '-q', '-m', tag, '--', ...scope(r)]);
     const back = r.fromBranch && r.fromBranch !== 'HEAD' ? r.fromBranch : r.base;
     if (back && gitOut(r.root, ['rev-parse', '--abbrev-ref', 'HEAD']) !== back) git(r.root, ['checkout', '-q', back]);
-    log(`↺ ${label(r)}: ${dirty ? `changes stashed as "${tag}"` : 'no uncommitted changes'}; back on ${back}; branch ${r.branch} kept`);
+    log(`↺ ${label(r)}: ${dirty ? `changes stashed as "${tag}"` : 'no uncommitted changes'}; on ${back}${back === r.branch ? '' : `; branch ${r.branch} kept`}`);
   }
   st.rolledBackAt = now(); st.stash = tag; saveState(root, st);
   updateTask(root, id, { status: 'FAILED', note: `rolled back (stash: ${tag})` });
-  log(`Recover: git checkout ${st.repos[0]?.branch} && git stash list | grep ${id} && git stash pop <stash@{n}>`);
+  log(`Recover: ${st.repos[0]?.branch && st.repos[0].branch !== st.repos[0].fromBranch ? `git checkout ${st.repos[0].branch} && ` : ''}git stash list | grep ${id} && git stash pop <stash@{n}>`);
 }
 
 function cmdMark({ pos }) {
@@ -1429,6 +1435,7 @@ function cmdAdd({ pos, flags }) {
   const wanted = svcArg.split(',').map((s) => s.trim()).filter(Boolean).filter((n) => !st.services.includes(getService(ws, n).name));
   if (!wanted.length) return log(`= ${id} already includes ${svcArg}`);
   const groups = groupRepos(root, ws, wanted);
+  const own = branchMode(ws) === 'feature';
   const branch = st.repos[0]?.branch ?? `${ws.pipeline?.branchPrefix ?? 'feat/'}${id}`;
   for (const g of groups) {
     const known = st.repos.find((r) => r.root === g.root);
@@ -1437,9 +1444,14 @@ function cmdAdd({ pos, flags }) {
     if (dirty && !flags['allow-dirty']) die(`${label(g)} has uncommitted changes:\n${dirty}\nCommit or stash them first (or pass --allow-dirty).`);
     g.base = gitOut(g.root, ['rev-parse', 'HEAD']);
     g.fromBranch = gitOut(g.root, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    g.branch = branch;
-    const exists = git(g.root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { allowFail: true }).status === 0;
-    git(g.root, exists ? ['checkout', '-q', branch] : ['checkout', '-q', '-b', branch]);
+    if (own) {
+      g.branch = branch;
+      const exists = git(g.root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { allowFail: true }).status === 0;
+      git(g.root, exists ? ['checkout', '-q', branch] : ['checkout', '-q', '-b', branch]);
+    } else {
+      if (g.fromBranch === 'HEAD') die(`${label(g)}: detached HEAD — switch to a branch first`);
+      g.branch = g.fromBranch; // працюємо в поточній гілці цього репозиторію
+    }
     // keep the workspace repo last: it records submodule pointers after the others commit
     const wsIdx = st.repos.findIndex((r) => r.rel === '');
     if (wsIdx >= 0) st.repos.splice(wsIdx, 0, g); else st.repos.push(g);
@@ -1448,7 +1460,7 @@ function cmdAdd({ pos, flags }) {
   if (Array.isArray(st.qa) && st.qa.length) st.qa = [...new Set([...st.qa, ...qaTargets(ws, st.services)])];
   saveState(root, st);
   updateTask(root, id, { services: st.services });
-  log(`✔ ${id}: added ${wanted.join(', ')} (branch ${branch})`);
+  log(`✔ ${id}: added ${wanted.join(', ')} (${own ? `branch ${branch}` : 'current branches'})`);
   log(`  QA now: ${(st.qa ?? []).join(', ') || 'skipped'}`);
 }
 // QA agents call this after writing their report: ties the verdict to the exact code that was tested.
@@ -1470,11 +1482,11 @@ function cmdStamp({ pos }) {
 
 // ------------------------------------------------------ QA depth & coverage
 const DEPTHS = {
-  smoke: { label: 'поверхневе', perAc: 1, cats: ['happy'] },
-  deep: { label: 'поглиблене', perAc: 4, cats: ['happy', 'negative', 'boundary', 'partial', 'navigation', 'interrupt'] },
-  exhaustive: { label: 'дуже ретельне', perAc: 8, cats: ['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual'] },
+  smoke: { label: 'поверхневе', perAc: 1, widths: 3, cats: ['happy'] },
+  deep: { label: 'поглиблене', perAc: 4, widths: 7, cats: ['happy', 'negative', 'boundary', 'partial', 'navigation', 'interrupt'] },
+  exhaustive: { label: 'дуже ретельне', perAc: 8, widths: 13, cats: ['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual'] },
 };
-const CATEGORIES = new Set(['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual', 'regression']);
+const CATEGORIES = new Set(['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual', 'responsive', 'regression']);
 function taskDepth(root, ws, id) {
   const st = fs.existsSync(statePath(root, id)) ? readJson(statePath(root, id)) : {};
   return st.depth ?? (DEPTHS[ws.qa?.defaultDepth] ? ws.qa.defaultDepth : null);
@@ -1507,6 +1519,11 @@ function collectCases(root, ws, id, kind) {
   }
   return cases;
 }
+// Ширини екрана, на яких реально перевірено верстку (рядки пише checkLayout у .pipeline/<id>/layout.jsonl).
+function layoutWidths(root, id) {
+  const rows = readText(path.join(taskDir(root, id), 'layout.jsonl')).split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  return [...new Set(rows.map((r) => r.width))].filter(Boolean).sort((a, b) => a - b);
+}
 function coverageReport(root, ws, id, kind) {
   const depth = taskDepth(root, ws, id);
   if (!depth) return { ok: false, depth: null, problems: [`depth is not set — ask the user and run: ${PL} mark ${id} depth=smoke|deep|exhaustive`] };
@@ -1522,14 +1539,21 @@ function coverageReport(root, ws, id, kind) {
   const perAc = acs.map((ac) => ({ ac, n: cases.filter((c) => c.ac === ac).length }));
   for (const { ac, n } of perAc) if (n < rule.perAc) problems.push(`${ac}: ${n} case(s), need at least ${rule.perAc} for ${depth}`);
   const present = new Set(cases.flatMap((c) => c.cats));
-  for (const cat of rule.cats) {
+  // веб: адаптивність перевіряється завжди (на всіх глибинах), якщо задача не оголосила її неактуальною
+  const required = kind === 'web' ? [...rule.cats, 'responsive'] : rule.cats;
+  let widths = null;
+  if (kind === 'web' && !(typeof na.responsive === 'string' && na.responsive.trim().length >= 10)) {
+    widths = layoutWidths(root, id);
+    if (widths.length < rule.widths) problems.push(`responsive: layout was checked at ${widths.length} width(s) (${widths.join(', ') || 'none'}), need at least ${rule.widths} for ${depth} — use checkLayout() from e2e/_helpers/layout-checks.ts over WIDTHS.${depth} (or declare not_applicable.responsive with a real reason)`);
+  }
+  for (const cat of required) {
     if (present.has(cat)) continue;
     if (typeof na[cat] === 'string' && na[cat].trim().length >= 10) continue;
     problems.push(`category "${cat}" not covered (or declare not_applicable.${cat} with a real reason in the report)`);
   }
   const untagged = cases.filter((c) => !c.ac || !c.cats.length).map((c) => c.file);
   if (untagged.length) problems.push(`cases without AC id or category tag: ${[...new Set(untagged)].slice(0, 10).join(', ')}`);
-  return { ok: !problems.length, depth, label: rule.label, total: cases.length, perAc, categories: [...present], problems };
+  return { ok: !problems.length, depth, label: rule.label, total: cases.length, perAc, categories: [...present], widths, problems };
 }
 function cmdCoverage({ pos, flags }) {
   const [id, kindArg] = pos;
@@ -1544,6 +1568,7 @@ function cmdCoverage({ pos, flags }) {
     log(`${r.ok ? '✔' : '✖'} ${kind} coverage — depth: ${r.depth ?? '?'}${r.label ? ` (${r.label})` : ''}, cases: ${r.total ?? 0}`);
     for (const p of r.perAc ?? []) log(`   ${p.ac}: ${p.n}`);
     if (r.categories?.length) log(`   categories: ${r.categories.join(', ')}`);
+    if (r.widths) log(`   layout widths checked: ${r.widths.join(', ') || 'none'}`);
     for (const p of r.problems) log(`   ✖ ${p}`);
     ok &&= r.ok;
   }
@@ -1649,6 +1674,7 @@ function cmdScaffold() {
   if (ws.services.some((s) => ['frontend', 'mobile'].includes(s.type))) copyIfMissing(root, 'testing-guide.md', 'docs/testing/_TEMPLATE.md');
   if (ws.contracts?.path) { fs.mkdirSync(path.join(root, ws.contracts.path, 'events'), { recursive: true }); log(`  + ${cleanPath(ws.contracts.path)}/ (and events/)`); }
   if (ws.e2e?.path) copyIfMissing(root, 'playwright.config.ts', path.join(cleanPath(ws.e2e.path), 'playwright.config.ts'));
+  if (ws.e2e?.path) copyIfMissing(root, 'layout-checks.ts', path.join(cleanPath(ws.e2e.path), '_helpers', 'layout-checks.ts'));
   if (ws.e2eMobile?.path) copyIfMissing(root, 'maestro-flow.example.yaml', path.join(cleanPath(ws.e2eMobile.path), '_examples', 'AC-1.example.yaml'));
   if (!fs.existsSync(tasksPath(root))) { writeJson(tasksPath(root), { tasks: [] }); log('  + .pipeline/tasks.json'); }
   const gi = path.join(root, '.gitignore');
@@ -1722,7 +1748,7 @@ function cmdDoctor() {
   }
 }
 function cmdTemplate({ pos }) {
-  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', 'testing-guide': 'testing-guide.md' };
+  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', layout: 'layout-checks.ts', 'testing-guide': 'testing-guide.md' };
   const f = map[pos[0]] ?? die(`Usage: template <${Object.keys(map).join('|')}>`);
   process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'templates', f), 'utf8'));
 }
@@ -1733,7 +1759,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   conventions                    print coding conventions (comment language etc.) for agents
   detect [--json]                scan folders: services, types, repos/submodules, checks, ports, links between projects
   services [--type t] [--json]   list workspace services with their links (uses / used by)
-  start <id> <svc,..|all>        create feat/<id> branches in affected repos [--no-qa] [--allow-dirty]
+  start <id> <svc,..|all>        start the task in affected repos [--no-qa] [--allow-dirty] (works in the CURRENT branch; pipeline.branchMode="feature" creates feat/<id>)
   diff <id|adhoc>                build the blind-audit diff (.pipeline/<id>/diff.patch)
   review <id>                    verdict of the pretester's report: blocking / accepted compromises / tech debt (exit 1 if blocking)
   waive <id> <F-id> --reason ".." [--by pm|user]   accept a finding as a compromise (blocker needs --by user)
@@ -1758,7 +1784,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   coverage <id> [mobile|web]     are there enough test cases and categories for the task's QA depth?
   playbook                       the tester's case catalogue (forms, fields, gestures, interruptions, network…)
   scaffold | doctor              set up / check the workspace
-  template <workspace|spec|playwright|mobile-flow|testing-guide>
+  template <workspace|spec|playwright|layout|mobile-flow|testing-guide>
   guard                          PreToolUse hook (reads JSON on stdin)
   install-hook | uninstall-hook      used by install.sh / uninstall.sh
   install-memory | uninstall-memory  add/remove the language block in ~/.claude/CLAUDE.md`;

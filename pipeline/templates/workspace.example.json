@@ -134,6 +134,7 @@
     "maxDiffLines": 3000
   },
   "pipeline": {
+    "branchMode": "current",
     "branchPrefix": "feat/",
     "maxLoops": 3,
     "verifySteps": [

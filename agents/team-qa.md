@@ -43,10 +43,18 @@ Test **what this task changed**, deeply, plus a short check of what could break 
    Mark each case `auto` (a test you will write) or `manual` (can't be automated here — say why). Save the matrix in your report.
 4. **Priority** — critical flows and the new feature first; cosmetic issues last. If time is short, cover all ACs' happy + main negative paths before edge cases.
 
+## Responsive layout — mandatory for every task that touches UI
+Check how the feature looks and behaves at different screen widths — playbook §3.9 is the checklist.
+1. If `<e2e.path>/_helpers/layout-checks.ts` is missing: `node ~/.claude/pipeline/pipeline.mjs template layout > <e2e.path>/_helpers/layout-checks.ts`.
+2. Per changed screen **and per state that changes the layout** (empty, error, long content, open menu/modal…) write a `test('AC-<n> [responsive] <screen/state>')` that loops `eachWidth(page, WIDTHS[<depth>], …)` and calls `checkLayout(page, testInfo, { name })`. It fails on horizontal scroll, elements outside the screen, content spilling out of its block, clipped text, overlapping elements and covered controls.
+3. `deep`/`exhaustive`: also hostile content (very long words/names, many items, 1 character) and the edge sizes listed in the playbook.
+4. Open the helper's screenshots (first, middle, last width of each screen) with Read and judge what a script cannot: spacing, alignment, readability, unusable tables or menus on a phone. Add what you find to `qa.json` (`"source": "visual"`, width, selector, screenshot, severity).
+5. The coverage check counts the distinct widths actually run (smoke 3, deep 7, exhaustive 13). A backend-only task has nothing to render: declare `not_applicable.responsive` with a real reason.
+
 ## Writing tests
 - Comments in tests follow the conventions (JSDoc above helpers, a comment above each test step group).
 - First the test plan `<e2e.path>/<id>.cases.md` (playbook §2). Then one file per task: `<e2e.path>/<id>.spec.ts`, **one `test()` per case**, titled `AC-<n> [<category>] <short name>` (playbook §5).
-- Cover: happy path, validation errors, error/empty states, redirects, auth-required pages, keyboard submit where relevant.
+- Cover: happy path, validation errors, error/empty states, redirects, auth-required pages, keyboard submit where relevant, and the layout at several widths (above).
 - Backend-only tasks: use Playwright's `request` fixture against the service `dev.url`.
 - Selectors: `getByTestId`, `getByRole`, `getByLabel`. No brittle CSS/XPath.
 - Every browser test fails on console errors and page errors:

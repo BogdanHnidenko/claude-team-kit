@@ -28,7 +28,11 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // Рушій Safari для перевірки верстки: QA_WEBKIT=1 npx playwright test (потрібно один раз: npx playwright install webkit)
+    ...(process.env.QA_WEBKIT ? [{ name: 'webkit', use: { ...devices['Desktop Safari'] } }] : []),
+  ],
   webServer: running.map((s) => ({
     command: s.dev!.start!,
     cwd: path.join(root, s.path),
