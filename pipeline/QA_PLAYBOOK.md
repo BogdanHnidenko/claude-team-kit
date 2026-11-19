@@ -1,28 +1,46 @@
-# QA playbook — test like a meticulous human tester
+# QA playbook — test with your own eyes, like a meticulous human
 
-You are not a script runner. You are the tester who finds the bug before the user does.
-Read this whole playbook before designing tests. The task's **depth** decides how far you go.
+You are not a script runner. You open the real app, look at it, use it the way a person would, and judge what you see.
+Writing long test suites is NOT your job: the time limit is short (it is enforced) and every minute should go to looking and trying.
 
-## 1. Depth levels
+## 1. Depth, time and what must be covered
 
-| Depth | Meaning | Min. cases per AC | Categories that must be covered in the task (tags) |
+| Depth | Time limit | Min. checks per AC | Categories that must appear in `checks` |
 |---|---|---|---|
-| `smoke` (поверхневе) | does the feature work at all | 1 | `happy` (+ `responsive` for web, 3 widths) |
-| `deep` (поглиблене) | normal + wrong use, edges, interruptions | 4 | `happy`, `negative`, `boundary`, `partial`, `navigation`, `interrupt` (+ `responsive` for web, 7 widths) |
-| `exhaustive` (дуже ретельне) | everything a real person could do | 8 | `happy`, `negative`, `boundary`, `partial`, `data`, `navigation`, `gesture`, `interrupt`, `network`, `state`, `a11y`, `visual` (+ `responsive` for web, 13 widths) |
+| `smoke` (поверхневе) | 8 min | 1 | `happy` · web: layout at 3 widths |
+| `deep` (поглиблене) | 20 min | 2 | `happy`, `negative`, `boundary`, `state` · web: layout at 7 widths · mobile also `interrupt` |
+| `exhaustive` (дуже ретельне) | 45 min per platform | 4 | `happy`, `negative`, `boundary`, `state`, `navigation`, `interrupt`, `network`, `a11y`, `visual` · web: layout at 13 widths |
 
-- Get the depth: `node ~/.claude/pipeline/pipeline.mjs current --json` → `depth` (or the depth given in your prompt).
-- A category that truly cannot apply (e.g. `partial` when the feature has no form) must be declared in your report under `"not_applicable": { "partial": "reason" }`. The coverage check accepts it only with a reason.
-- Check yourself before stamping: `node ~/.claude/pipeline/pipeline.mjs coverage <id> mobile|web`. `stamp` runs the same check and refuses if coverage is below the depth.
+- The time limit starts at `pl eyes start …` and is enforced: after it, every action is refused (`TIME_UP`). Check the clock in each command's last line; leave 2 minutes for the report.
+- A category that truly cannot apply goes into the report as `"not_applicable": { "network": "reason of at least 10 characters" }`.
+- The spec's **Consistency** section (ids `K-1`, `K-2`…) lists things that must look the same on two surfaces (app screen ↔ email ↔ PDF). Every one must be checked (section 4).
+- Check yourself: `pl coverage <id> web|mobile`.
 
-## 2. Plan first: CASES.md
+## 2. Method: charter → act → look → decide
 
-Before writing any test, write the test plan in Ukrainian:
-- mobile: `<e2eMobile.path>/<id>/CASES.md`; web: `<e2e.path>/<id>.cases.md`.
-- One table per AC: `# | case | category | data | steps | expected | auto/manual`.
-- The user reads this file — make it clear enough that a person could run the tests by hand.
+1. **Charters, not test cases.** From the spec's acceptance criteria and *Test focus*, write 5–10 one-line missions in your head or in `.pipeline/<id>/eyes/charters.md` ("fill the form with an emoji name and send it", "open the quote on a phone and check the totals"). Nothing else to plan.
+2. **Start once:** `pl eyes start web` (or `pl eyes start mobile --platform ios`). It starts the needed services, opens the browser or simulator and starts the clock.
+3. **Loop:** act (`click`, `fill`, `tap`, `type`…) → `look` (a screenshot and a list of what is on screen; open the screenshot with Read) → decide: is this what the spec promises and what a normal person would expect? Not sure what is expected → mark the check `blocked` and ask (`STATUS: QUESTIONS`), never invent expected behaviour.
+4. **Look at every result** with your own eyes: cut text, overlapping elements, wrong colours, raw `undefined`/`null`/`NaN`, untranslated strings, wrong totals, empty states without a message, a button that looks pressed but did nothing.
+5. **Record as you go** (the report is built from your observations, and every claim needs a screenshot from the journal).
 
-## 3. Case catalogue — go through every section that applies
+Command cheat-sheet (`pl` = `node ~/.claude/pipeline/pipeline.mjs`; all take `--task <id>` when more than one task is running):
+
+| Web | Mobile |
+|---|---|
+| `pl eyes goto /path` · `back` · `reload` | `pl eyes launch [--clear]` · `kill` · `background` · `foreground` |
+| `pl eyes look [name] [--full] [--target testid:x]` | `pl eyes look [name]` |
+| `click` / `dblclick` / `hover` / `check` `<target>` | `tap` / `longpress` `<target>` |
+| `fill <target> <text>` · `type <target> <text>` (keystroke by keystroke) · `press Enter` · `select <target> <value>` | `type [<target>] <text>` · `hidekeyboard` |
+| `scroll 400\|top\|bottom` · `wait [target] [ms]` | `swipe up\|down\|left\|right` · `scroll` · `scrollto <target>` · `back` |
+| `resize <w> [h]` · **`sweep <name>`** (all widths of the depth + automatic layout audit) | `scheme dark\|light` · `font large\|normal` |
+| `net offline\|online\|slow:3000` · `scheme dark\|light` · `clear` (cookies/storage) | `net offline\|online` (Android) · `backend stop\|start` (works on both) |
+| `text [target] --out name` (visible text → file) · `eval "<js>"` | `text --out name` · `flow '<maestro yaml>'` (anything else) |
+
+Targets: web `testid:send`, `text:Save`, `role:button:Save`, `label:Email`, `placeholder:…`, `css:…`, or just the word (tries testid → button → link → label → text). Mobile `id:send` (testID), `text:Save`, `point:50%,80%`, or the word. Use the spec's testIDs first, then what `look` shows.
+Errors do not stop you: a failed click is information (the element is missing or covered), record it.
+
+## 3. What to try (go through the sections that fit this task)
 
 ### 3.1 Every form (category `partial`, `negative`, `happy`)
 - **All valid** — realistic values, submit → success. Then the same with the *minimum* valid values and with the *maximum* valid values.
@@ -57,45 +75,14 @@ For **every** input, pick from this list what fits its type:
 - Protected screen while logged out → redirect, then return to the original screen after login.
 - Double navigation: tap a link twice quickly → only one screen opens.
 
-### 3.4 Gestures (category `gesture`, mobile; for web: drag, hover, keyboard navigation)
-- **Swipe left and right** on every list item / card (actions like delete/archive appear? Undo? Swipe partially and release?).
-- Swipe left/right between tabs / pages / carousel; swipe at the first and last page.
-- Swipe down to close modals/bottom sheets; **pull to refresh** on lists (with and without network).
-- Long press on items (context menu?); double tap; tap during an animation.
-- Scroll to the very end of long lists (pagination/infinite load, "no more items"), scroll fast up and down.
-- Rotate the device if the app supports landscape.
-
-Maestro examples:
-```yaml
-# Свайп елемента списку вліво — мають з'явитися дії
-- swipe:
-    from:
-      id: "quote-item-0"
-    direction: LEFT
-- assertVisible:
-    id: "quote-item-0-delete"
-# Свайп вправо — дія скасовується або інша дія
-- swipe:
-    from:
-      id: "quote-item-0"
-    direction: RIGHT
-# Тягнемо список донизу для оновлення
-- swipe:
-    direction: DOWN
-# Скролимо, поки не з'явиться останній елемент
-- scrollUntilVisible:
-    element:
-      id: "list-end"
-    direction: DOWN
-# Довге натискання
-- longPressOn:
-    id: "quote-item-0"
-```
+### 3.4 Gestures and input devices
+- Mobile: swipe left/right on every list item (actions? undo? partial swipe?), swipe between tabs/pages (also at the first/last page), pull to refresh, scroll to the very end, long press (`swipe`, `scroll`, `scrollto`, `longpress`).
+- Web: keyboard only (Tab order, Enter submits, Escape closes), hover states, double click, browser Back/Forward in the middle of a flow.
 
 ### 3.5 Impatient & interrupted user (category `interrupt`)
 - Double tap / triple tap on Submit → exactly one request / one item created.
 - Tap Submit, then immediately back.
-- Put the app in background during loading and return; kill the app mid-flow (`stopApp` / `killApp`) and reopen.
+- Put the app in background during loading and return; kill the app mid-flow (`pl eyes kill`, then `pl eyes launch`).
 - Keyboard: open → rotate/background → return; tap outside to hide; does the keyboard cover the button?
 - Incoming interruption (another app via `openLink`, system dialog) and return.
 
@@ -117,55 +104,54 @@ Maestro examples:
 - Look at every screenshot: cut text, overlapping elements, wrong colours in dark mode, keyboard covering inputs, notch/safe-area problems, untranslated strings, placeholder text like `lorem` or `undefined`.
 
 ### 3.9 Responsive layout (web, category `responsive` — required at every depth)
-Every web task that touches UI is checked at several screen widths. The helper does the mechanical part (overflow, overlap, clipping, covered controls); you choose the pages, states and extra manual looks.
-- **Widths per depth** (min. distinct widths, counted by the script from `.pipeline/<id>/layout.jsonl`): `smoke` 3 (`WIDTHS.smoke` = 375, 768, 1280) · `deep` 7 (`WIDTHS.deep` = 320, 375, 414, 768, 1024, 1280, 1536) · `exhaustive` 13 (`WIDTHS.exhaustive` = 320 … 1920, includes 360, 390, 480, 600, 834, 1440).
+Every web task that touches UI is checked at several screen widths. The `pl eyes sweep` does the mechanical part (overflow, overlap, clipping, covered controls); you choose the pages, states and extra manual looks.
+- **Widths per depth** (min. distinct widths, counted by the script from `.pipeline/<id>/layout.jsonl`): `smoke` 3 (375, 768, 1280) · `deep` 7 (320, 375, 414, 768, 1024, 1280, 1536) · `exhaustive` 13 (320 … 1920). **`pl eyes sweep <name>` runs all of them for the current page in seconds** (resize, automatic audit, full-page screenshot); you only decide which pages and states to sweep and then look at the screenshots it names.
 - **What to open at each width:** every screen/route the task changed, **and** each state of it that can change the layout: empty, loading, error banner, success message, validation errors visible, long content, many items, open dropdown/modal/menu/drawer, expanded accordion.
 - **Hostile content** (`deep`+): very long unbroken word (`Supercalifragilistic…` 60+ chars), long email, long Cyrillic name, number with many digits, 3-line title, text with emoji; and the opposite — 1 character.
-- **Edge sizes** (`exhaustive`): phone landscape 844×390, short window 1280×500, tablet portrait/landscape (768×1024, 1024×768), page zoomed to 200% (browser zoom: `page.evaluate(() => { document.body.style.zoom = '2' })` or a 640px-wide viewport), large text (`html { font-size: 20px }`), a Safari-like engine when available (`QA_WEBKIT=1`).
+- **Edge sizes** (`exhaustive`): phone landscape (`pl eyes resize 844 390`), short window (`resize 1280 500`), tablet (`resize 768 1024` and `1024 768`), zoom 200% (`pl eyes eval "document.body.style.zoom='2'"` or `resize 640`), large text (`pl eyes eval "document.documentElement.style.fontSize='20px'"`).
 - **What counts as a bug:** horizontal page scroll; anything outside the screen edge; text or buttons spilling out of their card; text cut without an ellipsis; two elements on top of each other; a button/input/link covered by a header, banner, cookie bar or modal; a menu that does not collapse or cannot be opened on a narrow screen; tap target < 24px on mobile widths; images stretched, cropped or broken; fixed header covering the content below it; keyboard (focus) landing on something hidden.
-- **Look yourself too.** The helper attaches a full-page screenshot per width: open the first, middle and last width of each page with Read and judge what a script cannot: ugly spacing, unreadable contrast, misaligned columns, a table that is unusable on a phone, text too small.
-- **Report** each problem with the width, the element selector, the screenshot and the severity (`major` when a control is unusable or content unreachable, `minor` when it is merely ugly).
+- **Look yourself too.** `sweep` prints which screenshots to open (first, middle, last width and every one with errors). Read them: ugly spacing, unreadable contrast, misaligned columns, a table that is unusable on a phone, text too small.
+- **Record** each problem as a check/finding with the width, the element selector, the screenshot and the severity (`major` when a control is unusable or content unreachable, `minor` when it is merely ugly).
 
-## 4. Writing mobile flows (Maestro)
+## 4. Consistency between surfaces (app ↔ email ↔ PDF)
 
-- **One case = one file**: `<e2eMobile.path>/<id>/AC-<n>-<category>-<short-name>.yaml`.
-- Header: `appId: ${APP_ID}`, `name: "AC-1 · partial · без email"`, `tags: [AC-1, partial]` — tags are how coverage is counted.
-- Reuse steps through sub-flows in `<e2eMobile.path>/_shared/` and pass data with `env`:
-```yaml
-appId: ${APP_ID}
-name: "AC-1 · negative · email без @"
-tags: [AC-1, negative]
----
-# Відкриваємо форму з чистим станом
-- runFlow: ../_shared/open-signup.yaml
-# Заповнюємо всі поля коректно, крім email
-- runFlow:
-    file: ../_shared/fill-signup.yaml
-    env:
-      NAME: "Богдан"
-      EMAIL: "bohdan.example.test"
-      PASSWORD: "Test-Password-1"
-- tapOn:
-    id: "signup-submit"
-# Очікуємо помилку саме під полем email
-- assertVisible:
-    id: "signup-email-error"
-- assertNotVisible:
-    id: "signup-name-error"
-- takeScreenshot: AC-1-negative-email-no-at
+When the spec lists `K-n` items, or the task changes anything that is sent to a client, the same data must look the same everywhere it appears: amounts and currency, number formatting (`1,234.50` vs `1234.5`), dates and times, names, labels, order of lines, language.
+1. Clear the mailbox first: `pl mail clear`. Do the action in the app that sends the email.
+2. Capture the app side: `pl eyes text <target> --out app-total` (and `look` for the screenshot).
+3. Capture the email: `pl mail wait --to <address>` (saves text and HTML), then `pl mail shot` renders it at 600 px (desktop) and 375 px (phone): open both screenshots with Read.
+4. Compare: `pl compare app-total <mail-id> --name K-1`. It extracts amounts, dates, times, percentages, emails, phones and numbers from both texts and reports: same, same value in a **different format**, only in one of them. It also lists lines that differ.
+5. Judge the rest with your eyes: layout of the email, readable on a phone, the same structure and wording, no broken characters.
+6. Record it in `consistency` (section 6) with the compare file and the screenshots as evidence. `differs` is a finding (`owner_hint` = the service that renders the email or the screen).
+Other surfaces (PDF, push text, export): get their text into a file, then `pl compare` the same way.
+
+## 5. Time discipline
+- Smoke: no exploration beyond the ACs. Deep: ~⅓ of the time on free exploration after the ACs. Exhaustive: ~½.
+- Don't re-check what already passed. After a failure, record it with evidence and move on; do not debug the app (you never read its code).
+- Take screenshots at decisions, not after every click: `look` only when you need to judge something.
+
+## 6. Report: `.pipeline/<id>/qa.json` (web) or `qa-mobile.json` (mobile)
+
+```json
+{
+  "task": "<id>", "verdict": "PASS | FAIL", "reason": null,
+  "checks": [
+    { "id": "C1", "ac": "AC-1", "category": "happy", "what": "send a quote to a client from the preview",
+      "result": "passed | failed | blocked", "evidence": ["eyes/shots/004-preview.png"],
+      "width": 375, "severity": "major", "note": "required for failed", "owner_hint": "frontend:web | backend:<service> | mobile:<app> | unknown" }
+  ],
+  "consistency": [
+    { "id": "K-1", "a": "app: total on the quote screen", "b": "email to the client", "result": "same | differs | blocked",
+      "diff": "app $1,234.50 vs email $1234.5", "evidence": ["eyes/compare/01-K-1.json", "eyes/shots/006-mail-375.png"], "owner_hint": "backend:mailer" }
+  ],
+  "findings": [
+    { "id": "F1", "severity": "blocker | major | minor", "ac": "AC-1", "title": "…", "steps": ["…"], "expected": "…", "actual": "…",
+      "evidence": ["eyes/shots/002-after-send.png"], "owner_hint": "frontend:web" }
+  ],
+  "not_applicable": { "network": "the feature works fully offline — no server calls" }
+}
 ```
-- Useful commands: `tapOn`, `doubleTapOn`, `longPressOn`, `inputText`, `inputRandomEmail`, `inputRandomText`, `inputRandomNumber`, `eraseText`, `hideKeyboard`, `swipe`, `scroll`, `scrollUntilVisible`, `back`, `pressKey`, `assertVisible`, `assertNotVisible`, `assertTrue`, `extendedWaitUntil`, `waitForAnimationToEnd`, `stopApp`, `killApp`, `launchApp` (with `clearState`), `openLink`, `copyTextFrom`, `pasteText`, `repeat`, `runFlow` (with `env` and `when`), `takeScreenshot`.
-- Every case asserts the **outcome** (what changed on screen / what must NOT appear), not only that taps worked.
-
-## 5. Writing web tests (Playwright)
-
-- Title format: `test('AC-1 [partial] без email', …)` — the `[category]` in brackets is how coverage is counted.
-- Data-driven cases with a table + `for … of` loop are fine, but each row must be its own `test()` with its own title and tag.
-- **Layout at many widths:** import the helper (`e2e/_helpers/layout-checks.ts`; if it is missing run `node ~/.claude/pipeline/pipeline.mjs template layout > <e2e.path>/_helpers/layout-checks.ts`). Pattern: `await eachWidth(page, WIDTHS.deep, async (w) => { await checkLayout(page, testInfo, { name: \`profile-${w}\` }); });` — one `test('AC-1 [responsive] …')` per screen/state. Use `WIDTHS[depth]`. `checkLayout` fails the test on overflow/overlap/clipping and records the width for the coverage check.
-- Use `page.route` to simulate server errors/slow network, `context.setOffline(true)` for offline, `page.setViewportSize` for small screens, keyboard-only navigation (`Tab`, `Enter`, `Escape`).
-
-## 6. Report honestly
-
-- Never mark a case passed that you did not run. Can't automate it → `manual` with the exact steps for a human.
-- A bug you found by exploring counts as much as a failing scripted case.
-- Each failure: steps, expected vs actual, screenshot path, owner hint, severity (`critical` crash/data loss · `major` feature broken · `minor` wrong message · `cosmetic` layout).
+- `evidence` are paths from the commands' output (`.pipeline/<id>/` prefix optional). **Only files made by `pl eyes` / `pl mail` / `pl compare` are accepted**; anything else is rejected.
+- Severity: `blocker` crash/data loss/feature unusable · `major` feature wrong or control unusable · `minor` wording/cosmetic.
+- Finish with `pl eyes finish`: it validates the report against the journal, fills `results` and `verdict`, and prints problems to fix. Then `pl coverage <id> web|mobile`. The stamp is set by the orchestrator side.
+- Never mark a check passed that you did not do. A bug found by exploring counts as much as an AC check.
+- If a finding must never come back and is cheap to automate, you may add ONE short regression test (Playwright under `e2e/`, Maestro under `e2e-mobile/`) — optional, not a gate.

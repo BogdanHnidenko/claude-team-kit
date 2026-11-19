@@ -115,7 +115,17 @@
     ]
   },
   "qa": {
-    "defaultDepth": "ask"
+    "defaultDepth": "ask",
+    "budgetMin": {
+      "smoke": 8,
+      "deep": 20,
+      "exhaustive": 45
+    },
+    "providers": {
+      "web": "claude",
+      "mobile": "claude"
+    },
+    "fallback": "ask"
   },
   "contracts": {
     "path": "contracts",
@@ -215,5 +225,9 @@
         ]
       }
     }
+  },
+  "mail": {
+    "kind": "mailpit",
+    "url": "http://localhost:8025"
   }
 }

@@ -51,6 +51,12 @@ List only the services that change, in build order (providers before consumers).
 - **Screens and states to check at different widths (web):** which pages / states change the layout (empty, error, long text, open menu or modal, many items); anything known to be tight on a phone.
 - **Risky cases specific to this feature:** e.g. offline while saving, double submit, very long input.
 
+## 6a. Consistency between surfaces (what must look the same in two places)
+Fill this in whenever the task touches data that is shown in the app AND sent or exported somewhere (email to a client, PDF, push text, another screen). The tester compares both sides (amounts, number formats, dates, names, order of lines, wording, layout on a phone). No such data → write `none` and no K-items.
+| id | surface A | surface B | what must match |
+|---|---|---|---|
+| K-1 | e.g. quote screen in the app | e.g. the email sent to the client | totals, currency format, dates, line order, language |
+
 ## 7. Decisions (questions answered by the user)
 Every question an agent asked and the user's answer — agents read this before asking again.
 | # | Question | Answer | Asked by | Date |

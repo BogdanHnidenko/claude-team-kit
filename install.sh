@@ -51,12 +51,23 @@ echo "  helper   $DEST/pipeline/pipeline.mjs"
 node "$DEST/pipeline/pipeline.mjs" install-hook "$DEST/settings.json" "$DEST/pipeline/pipeline.mjs"
 node "$DEST/pipeline/pipeline.mjs" install-memory "$DEST/CLAUDE.md"
 
+# Необов'язково: тестувальник на іншому ШІ (Gemini / ChatGPT) — лише в інтерактивному терміналі
+if [ -t 0 ] && [ -t 1 ] && [ -z "${CI:-}" ] && [ -z "${KIT_NO_PROMPT:-}" ]; then
+  echo
+  read -r -p "Налаштувати тестувальника на Gemini/ChatGPT замість Claude (економить токени Claude)? [y/N] " ANS || ANS=""
+  case "$ANS" in
+    y|Y|yes|так|т) node "$DEST/pipeline/pipeline.mjs" qa-setup || true ;;
+    *) echo "  Пізніше: node ~/.claude/pipeline/pipeline.mjs qa-setup  (або /qa-provider в Claude Code)" ;;
+  esac
+fi
+
 cat <<EOF
 
 ✔ Done. In any project:
   1. cd <workspace root>  &&  claude
   2. /pipeline-init   (scans everything; or /pipeline-init-web, /pipeline-init-mobile)
   3. /feature <what to build>
+  Tester on Gemini/ChatGPT:  /qa-provider   (or: node ~/.claude/pipeline/pipeline.mjs qa-setup)
 
 Check the install anytime:  node ~/.claude/pipeline/pipeline.mjs doctor
 EOF

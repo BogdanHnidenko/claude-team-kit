@@ -82,13 +82,13 @@ Run `node ~/.claude/pipeline/pipeline.mjs comments <task-id> <service>` before y
 - **Tests prove it**: a test for each branch you add (happy + each error/edge); a bug fix starts with a test that fails without the fix.
 - **No leftovers**: no `console.log`/debug code, no commented-out code, no `TODO` without a reason, no unused imports/variables, no `any` without a comment, no magic numbers without a named constant.
 - **Self-review before you report DONE** — read your own diff top to bottom as a strict reviewer and fix what you find:
-  1. Does every acceptance criterion work? Did I check it, not assume it?
+  1. Does every acceptance criterion hold in the code and in my unit tests? (Looking at it in a browser or simulator is the tester's job, not mine.)
   2. Any edge case or error path not handled? Any user-visible text missing or untranslated?
   3. Any security issue (input validation, auth/ownership, secrets, injection, unsafe rendering)?
   4. Names clear, functions small, no duplication, matches the existing style of the service?
   5. Every new function/variable has its comment in {{LANGUAGE}}?
   6. Lint, typecheck, tests, comments check — all green, run by me just now?
-- **Report the truth**: what you did, what you did NOT do, what you are unsure about. Never claim something works without having run it.
+- **Report the truth**: what you did, what you did NOT do, what you are unsure about. Never claim something works without having run it — "run" means typecheck, lint, unit tests, the comments check. Developers do not start a browser or a simulator: UI and end-to-end behaviour is verified by the tester, so write "not verified visually" instead of trying.
 
 ## 4. Questions instead of guesses
 You cannot talk to the user directly — the orchestrator relays your questions and brings the answers back.

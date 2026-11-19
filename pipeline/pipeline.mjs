@@ -7,17 +7,19 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateReport, finalizeReport, journalPlatforms, playwrightFound, BUDGET_MIN } from './eyes.mjs';
 
 const KIT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags', 'reason', 'by']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags', 'reason', 'by', 'kind', 'provider', 'depth', 'note', 'widths', 'out', 'target', 'timeout', 'to', 'subject', 'name']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -31,7 +33,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor']
+const SAFE_ALLOW = ['eyes', 'mail', 'compare', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -491,10 +493,9 @@ function cmdCommit({ pos, flags }) {
     const qa = readJson(path.join(dir, QA_FILES[t]), null);
     if (qa?.verdict !== 'PASS') problems.push(`${QA_FILES[t]} verdict is ${qa?.verdict ?? 'missing'} (need PASS)`);
     if (t === 'mobile') {
-      const sims = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^sim-(ios|android)\.json$/.test(f)) : [];
       const app = st.services.map((n) => getService(ws, n)).find((x) => x.type === 'mobile') ?? ws.services.find((x) => x.type === 'mobile');
-      for (const p of app ? platformsFor(ws, app, st.depth ?? taskDepth(root, ws, id)) : []) if (!sims.includes(`sim-${p}.json`)) problems.push(`no simulator run for ${p} (required for this depth)`);
-      for (const f of sims) { const v = readJson(path.join(dir, f), null)?.verdict; if (v !== 'PASS') problems.push(`${f} verdict is ${v ?? 'missing'} (need PASS)`); }
+      const seen = journalPlatforms(root, id);
+      for (const p of app ? platformsFor(ws, app, st.depth ?? taskDepth(root, ws, id)) : []) if (!seen.has(p)) problems.push(`no simulator session for ${p} (required for this depth): ${PL} eyes start mobile --platform ${p}`);
     }
   }
   const ver = readJson(path.join(dir, 'verify.json'), null);
@@ -989,12 +990,13 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
   const m = svc.mobile;
   const cwd = path.resolve(root, svc.path);
   const custom = typeof flags.flows === 'string' ? flags.flows : null; // exploration or regression run
-  const tag = custom ? `sim-${platform}-custom` : `sim-${platform}`;
+  const prepare = Boolean(flags.prepare); // лише підготувати симулятор/застосунок для `pl eyes`, без прогону сценаріїв
+  const tag = prepare ? `eyes-${platform}` : custom ? `sim-${platform}-custom` : `sim-${platform}`;
   const outDir = path.join(taskDir(root, id), tag);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   const report = { task: id, service: svc.name, platform, verdict: 'FAIL', device: null, built: false, flows: [], logErrors: [], screenshots: [], timings: {}, at: now() };
-  const write = () => writeJson(path.join(taskDir(root, id), `${tag}.json`), report);
+  const write = () => { if (!prepare) writeJson(path.join(taskDir(root, id), `${tag}.json`), report); };
   const mainFile = path.join(taskDir(root, id), `sim-${platform}.json`);
   const previous = custom ? null : readJson(mainFile, null);
   let t0 = Date.now();
@@ -1046,6 +1048,7 @@ async function simPlatform({ root, ws, st, id, svc, platform, flags, started }) 
       : spawn('adb', ['-s', device.id, 'logcat', '-v', 'time', 'ReactNativeJS:V', 'ReactNative:W', 'AndroidRuntime:E', '*:S'], { stdio: ['ignore', logOut, logOut], detached: true });
     logger.on('error', () => {});
     started.push({ name: 'device-log', child: logger });
+    if (prepare) { report.deviceId = device.id; return report; }
     // 5. maestro
     const flowsDir = custom ? path.resolve(root, custom) : path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
     if (!fs.existsSync(flowsDir)) fail(`no flows in ${posix(path.relative(root, flowsDir))}/ — write Maestro flows there first`);
@@ -1481,10 +1484,13 @@ function cmdStamp({ pos }) {
 }
 
 // ------------------------------------------------------ QA depth & coverage
+// Глибина тестування (метод «очі»: тестувальник сам дивиться на живий застосунок, а не пише сотні скриптів).
+// perAc — мінімум перевірок на кожен критерій; cats — обовʼязкові категорії; widths — скільки різних ширин екрана
+// мають пройти автоматичну перевірку верстки (веб); ліміт часу береться з eyes.mjs (BUDGET_MIN: 8 / 20 / 45 хв).
 const DEPTHS = {
   smoke: { label: 'поверхневе', perAc: 1, widths: 3, cats: ['happy'] },
-  deep: { label: 'поглиблене', perAc: 4, widths: 7, cats: ['happy', 'negative', 'boundary', 'partial', 'navigation', 'interrupt'] },
-  exhaustive: { label: 'дуже ретельне', perAc: 8, widths: 13, cats: ['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual'] },
+  deep: { label: 'поглиблене', perAc: 2, widths: 7, cats: ['happy', 'negative', 'boundary', 'state'] },
+  exhaustive: { label: 'дуже ретельне', perAc: 4, widths: 13, cats: ['happy', 'negative', 'boundary', 'state', 'navigation', 'interrupt', 'network', 'a11y', 'visual'] },
 };
 const CATEGORIES = new Set(['happy', 'negative', 'boundary', 'partial', 'data', 'navigation', 'gesture', 'interrupt', 'network', 'state', 'a11y', 'visual', 'responsive', 'regression']);
 function taskDepth(root, ws, id) {
@@ -1497,63 +1503,50 @@ function specAcs(root, id) {
   const section = /##[^\n]*Acceptance criteria[^\n]*\n([\s\S]*?)(\n## |\s*$)/i.exec(text)?.[1] ?? text;
   return [...new Set([...section.matchAll(/\bAC-(\d+)\b/g)].map((m) => `AC-${m[1]}`))];
 }
-// Cases written by QA: mobile = one Maestro file per case (tags), web = one test() per case ("AC-1 [category] …").
-function collectCases(root, ws, id, kind) {
-  const cases = [];
-  if (kind === 'mobile') {
-    const dir = path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id);
-    for (const f of listFiles(dir, /\.ya?ml$/i)) {
-      const head = readText(f).split(/^---\s*$/m)[0];
-      const tagBlock = /tags:\s*\[([^\]]*)\]/.exec(head)?.[1] ?? [...head.matchAll(/^\s*-\s*([\w-]+)\s*$/gm)].map((m) => m[1]).join(',');
-      const tags = tagBlock.split(',').map((t) => t.trim().replace(/['"]/g, '')).filter(Boolean);
-      const ac = tags.find((t) => /^AC-\d+$/.test(t)) ?? /(AC-\d+)/.exec(path.basename(f))?.[1] ?? null;
-      cases.push({ file: posix(path.relative(root, f)), ac, cats: tags.filter((t) => CATEGORIES.has(t)) });
-    }
-  } else {
-    const dir = path.join(root, cleanPath(ws.e2e?.path ?? 'e2e'));
-    for (const f of listFiles(dir, /\.(spec|test)\.(ts|js)$/).filter((f) => path.basename(f).startsWith(id))) {
-      for (const m of readText(f).matchAll(/\btest(?:\.\w+)?\(\s*[`'"](AC-\d+)\s*\[([^\]]+)\]/g)) {
-        cases.push({ file: posix(path.relative(root, f)), ac: m[1], cats: m[2].split(/[,\s]+/).filter((c) => CATEGORIES.has(c)) });
-      }
-    }
-  }
-  return cases;
-}
-// Ширини екрана, на яких реально перевірено верстку (рядки пише checkLayout у .pipeline/<id>/layout.jsonl).
 function layoutWidths(root, id) {
   const rows = readText(path.join(taskDir(root, id), 'layout.jsonl')).split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
   return [...new Set(rows.map((r) => r.width))].filter(Boolean).sort((a, b) => a - b);
 }
+/** Ідентифікатори K-n зі розділу «Consistency» у ТЗ: що має збігатися між поверхнями (додаток ↔ лист ↔ PDF). */
+function specConsistency(root, id) {
+  const text = readText(path.join(root, 'docs', 'specs', `${id}.md`));
+  const section = /##[^\n]*Consistency[^\n]*\n([\s\S]*?)(\n## |\s*$)/i.exec(text)?.[1] ?? '';
+  return [...new Set([...section.matchAll(/\bK-(\d+)\b/g)].map((m) => `K-${m[1]}`))];
+}
+/** Чи достатньо перевірок для глибини: кожен критерій, категорії, ширини екрана, збіг між поверхнями. Докази беруться лише з журналу eyes. */
 function coverageReport(root, ws, id, kind) {
   const depth = taskDepth(root, ws, id);
   if (!depth) return { ok: false, depth: null, problems: [`depth is not set — ask the user and run: ${PL} mark ${id} depth=smoke|deep|exhaustive`] };
   const rule = DEPTHS[depth];
   const acs = specAcs(root, id);
-  const cases = collectCases(root, ws, id, kind);
-  const report = readJson(path.join(taskDir(root, id), kind === 'mobile' ? 'qa-mobile.json' : 'qa.json'), {});
-  const na = report.not_applicable ?? {};
+  const { problems: reportProblems, report } = validateReport(root, id, kind, CATEGORIES);
   const problems = [];
   if (!acs.length) problems.push(`no "AC-<n>" found in docs/specs/${id}.md (Acceptance criteria section)`);
-  const planFile = kind === 'mobile' ? path.join(root, cleanPath(ws.e2eMobile?.path ?? 'e2e-mobile'), id, 'CASES.md') : path.join(root, cleanPath(ws.e2e?.path ?? 'e2e'), `${id}.cases.md`);
-  if (!fs.existsSync(planFile)) problems.push(`test plan missing: ${posix(path.relative(root, planFile))}`);
-  const perAc = acs.map((ac) => ({ ac, n: cases.filter((c) => c.ac === ac).length }));
-  for (const { ac, n } of perAc) if (n < rule.perAc) problems.push(`${ac}: ${n} case(s), need at least ${rule.perAc} for ${depth}`);
-  const present = new Set(cases.flatMap((c) => c.cats));
-  // веб: адаптивність перевіряється завжди (на всіх глибинах), якщо задача не оголосила її неактуальною
-  const required = kind === 'web' ? [...rule.cats, 'responsive'] : rule.cats;
+  if (reportProblems.length) problems.push(...reportProblems.slice(0, 15));
+  const checks = (report?.checks ?? []).filter((c) => c.result !== 'blocked');
+  const na = report?.not_applicable ?? {};
+  const perAc = acs.map((ac) => ({ ac, n: checks.filter((c) => c.ac === ac).length }));
+  for (const { ac, n } of perAc) if (n < rule.perAc) problems.push(`${ac}: ${n} check(s), need at least ${rule.perAc} for ${depth}`);
+  const present = new Set(checks.map((c) => c.category));
+  const required = [...rule.cats, ...(kind === 'mobile' && depth !== 'smoke' ? ['interrupt'] : [])];
   let widths = null;
   if (kind === 'web' && !(typeof na.responsive === 'string' && na.responsive.trim().length >= 10)) {
     widths = layoutWidths(root, id);
-    if (widths.length < rule.widths) problems.push(`responsive: layout was checked at ${widths.length} width(s) (${widths.join(', ') || 'none'}), need at least ${rule.widths} for ${depth} — use checkLayout() from e2e/_helpers/layout-checks.ts over WIDTHS.${depth} (or declare not_applicable.responsive with a real reason)`);
+    if (widths.length < rule.widths) problems.push(`responsive: layout was checked at ${widths.length} width(s) (${widths.join(', ') || 'none'}), need at least ${rule.widths} for ${depth} — run: ${PL} eyes sweep <name> on each changed screen/state (or declare not_applicable.responsive with a real reason)`);
   }
-  for (const cat of required) {
+  for (const cat of new Set(required)) {
     if (present.has(cat)) continue;
     if (typeof na[cat] === 'string' && na[cat].trim().length >= 10) continue;
     problems.push(`category "${cat}" not covered (or declare not_applicable.${cat} with a real reason in the report)`);
   }
-  const untagged = cases.filter((c) => !c.ac || !c.cats.length).map((c) => c.file);
-  if (untagged.length) problems.push(`cases without AC id or category tag: ${[...new Set(untagged)].slice(0, 10).join(', ')}`);
-  return { ok: !problems.length, depth, label: rule.label, total: cases.length, perAc, categories: [...present], widths, problems };
+  const ks = specConsistency(root, id);
+  const done = new Map((report?.consistency ?? []).map((k) => [k.id, k]));
+  for (const k of ks) {
+    const r = done.get(k);
+    if (!r) problems.push(`consistency ${k} (spec) has no entry in the report: compare the surfaces (${PL} compare …) and record it`);
+    else if (r.result === 'blocked') problems.push(`consistency ${k} is blocked — it must be checked`);
+  }
+  return { ok: !problems.length, depth, label: rule.label, total: checks.length, perAc, categories: [...present], widths, consistency: ks, problems };
 }
 function cmdCoverage({ pos, flags }) {
   const [id, kindArg] = pos;
@@ -1596,12 +1589,20 @@ const ASK = [
   [/pipeline\.mjs\s+deploy\b[^|;&]*--approved/, 'Deploy to an approval-only environment. Allow only if YOU asked for this deploy in this chat.'],
   [gre(String.raw`commit\b[^|;&]*--no-verify`), 'Commit that skips git hooks.'],
 ];
+// Розробникам заборонено тестувати в браузері чи на симуляторі: це робота тестувальника.
+const DEV_AGENTS = /^team-(backend|frontend|mobile)$/;
+const DEV_DENY = [
+  [/\bpipeline\.mjs\s+(sim|screen|eyes|qa-run|mail)\b/, 'developers do not run the simulator or the tester tools — the tester does'],
+  [/\bxcrun\s+simctl\b|\bmaestro\b|\badb\s|\bemulator\s+-|open\s+-a\s+Simulator/, 'developers do not start simulators/emulators — the tester does'],
+  [/\b(expo\s+run:(ios|android)|react-native\s+run-(ios|android)|npx\s+(-y\s+)?playwright|playwright\s+(test|open|codegen|screenshot))/, 'developers do not run e2e/browser checks — the tester does'],
+];
 function cmdGuard() {
   let input = {};
   try { input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch { process.exit(0); }
   if (input.tool_name && input.tool_name !== 'Bash') process.exit(0);
   const cmd = String(input.tool_input?.command ?? '');
   if (!cmd || !findRoot(input.cwd || process.cwd())) process.exit(0); // active only inside a team workspace
+  if (DEV_AGENTS.test(String(input.agent_type ?? ''))) for (const [re, why] of DEV_DENY) if (re.test(cmd)) { console.error(`BLOCKED by team-kit guard: ${why}`); process.exit(2); }
   for (const [re, why] of DENY) if (re.test(cmd)) { console.error(`BLOCKED by team-kit guard: ${why}`); process.exit(2); }
   for (const [re, why] of ASK) {
     if (re.test(cmd)) {
@@ -1710,7 +1711,7 @@ function cmdDoctor() {
   const home = path.join(os.homedir(), '.claude');
   const settings = readJson(path.join(home, 'settings.json'), {});
   JSON.stringify(settings.hooks ?? {}).includes('pipeline.mjs') ? ok('guard hook installed') : warn('guard hook not found in ~/.claude/settings.json — re-run install.sh');
-  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-qa', 'team-qa-mobile']) {
+  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-scout', 'team-qa', 'team-qa-mobile', 'team-qa-ext']) {
     fs.existsSync(path.join(home, 'agents', `${a}.md`)) ? null : warn(`agent ${a} not installed in ~/.claude/agents`);
   }
   const root = findRoot(process.cwd());
@@ -1724,6 +1725,13 @@ function cmdDoctor() {
     info && !missing.length ? ok(msg) : warn(msg);
     const local = path.join(root, s.path, 'CLAUDE.md');
     if (!fs.existsSync(local)) log(`   tip: add ${cleanPath(s.path)}/CLAUDE.md with this service's own conventions`);
+  }
+  if (ws.e2e?.path) playwrightFound(root, ws) ? ok('Playwright знайдено (браузер тестувальника)') : warn(`Playwright не знайдено: cd ${ws.e2e.path} && npm i -D @playwright/test && npx playwright install chromium`);
+  ws.mail?.url ? ok(`перехоплювач листів: ${ws.mail.kind ?? 'mailpit'} ${ws.mail.url} (перевір, що запущений)`) : log('   tip: додай "mail": { "kind": "mailpit", "url": "http://localhost:8025" } у workspace.json, якщо застосунок шле листи — тестувальник звіряє їх із додатком');
+  for (const k of ['web', 'mobile']) {
+    const pr = qaProvider(ws, k);
+    if (pr === 'claude' || !(ws[k === 'web' ? 'e2e' : 'e2eMobile']?.path)) continue;
+    which(QA_PROVIDERS[pr].bin) ? ok(`${k}-тестувальник працює через ${pr} (перевірити: ${PL} qa-setup --check)`) : warn(`${k}-тестувальник налаштований на ${pr}, але ${QA_PROVIDERS[pr].bin} не знайдено — ${PL} qa-setup`);
   }
   if (ws.e2e?.path) fs.existsSync(path.join(root, ws.e2e.path, 'playwright.config.ts')) ? ok(`e2e config in ${ws.e2e.path}`) : warn(`no playwright.config.ts in ${ws.e2e.path} — run scaffold`);
   for (const [env, c] of Object.entries(ws.deploy?.environments ?? {})) ok(`deploy ${env}: ${c.steps.length} step(s), ${(c.healthchecks ?? []).length} healthcheck(s)${c.requireApproval ? ', approval required' : ''}${c.rollback?.length ? ', rollback defined' : ''}`);
@@ -1747,6 +1755,328 @@ function cmdDoctor() {
     }
   }
 }
+// ------------------------------------------------------ зовнішній тестувальник (Gemini / ChatGPT замість Claude)
+// Ідея: працює той самий тестувальник (його інструкції з agents/team-qa*.md), але виконує його
+// інший ШІ через його CLI під підпискою користувача. Claude лише викликає `qa-run` і перевіряє результат.
+
+/** Провайдери тестувальника: ключ у workspace.json → qa.providers.<web|mobile>. */
+const QA_PROVIDERS = {
+  claude: { label: 'Claude (як зараз, витрачає токени Claude)' },
+  gemini: { label: 'Gemini через Antigravity CLI (agy), підписка Gemini', bin: 'agy', install: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
+  codex: { label: 'ChatGPT через Codex CLI (codex), підписка ChatGPT — експериментально', bin: 'codex', install: 'npm i -g @openai/codex' },
+};
+/** Глобальні налаштування Antigravity CLI: тут лежать дозволи для безголового режиму. */
+const AGY_SETTINGS = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
+/** Дозволи, потрібні тестувальнику (без коментарів у кінці рядка: agy тоді ігнорує правило мовчки). */
+const AGY_ALLOW_BASE = ['command(ls)', 'command(cat)', 'command(grep)', 'command(head)', 'command(tail)', 'command(mkdir)', 'command(pwd)', 'command(echo)', 'command(node)', 'command(npm)', 'command(npx)'];
+const AGY_ALLOW_MOBILE = ['command(maestro)', 'command(xcrun)', 'command(adb)'];
+const AGY_DENY = ['command(rm -rf)', 'command(git push)'];
+const QA_FILE = { web: 'qa.json', mobile: 'qa-mobile.json' };
+const QA_AGENT = { web: 'team-qa.md', mobile: 'team-qa-mobile.md' };
+const isTty = () => Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+/** Який провайдер тестує цей вид тестів (web|mobile); без налаштування — claude. */
+function qaProvider(ws, kind) {
+  const p = ws?.qa?.providers?.[kind];
+  return QA_PROVIDERS[p] ? p : 'claude';
+}
+function cmdQaProvider({ pos }) {
+  const kind = pos[0];
+  if (!QA_FILE[kind]) die('Usage: qa-provider <web|mobile>');
+  const root = findRoot(process.cwd());
+  const ws = root ? readJson(path.join(root, MANIFEST_REL), {}) : {};
+  log(qaProvider(ws, kind));
+}
+
+/** Запитання в терміналі (лише коли є TTY). */
+async function ask(question, def = '') {
+  const rl = (await import('node:readline/promises')).createInterface({ input: process.stdin, output: process.stdout });
+  try { return ((await rl.question(`${question}${def ? ` [${def}]` : ''} `)).trim() || def); } finally { rl.close(); }
+}
+const askYes = async (q, def = 'y') => /^(y|yes|т|так|д|да)/i.test(await ask(`${q} (y/n)`, def));
+
+/** Безпечно додає правила в settings.json agy: нічого не стирає, робить копію, не чіпає зіпсований JSON. */
+function mergeAgySettings(allow, deny, { dry = false } = {}) {
+  let cfg = {};
+  if (fs.existsSync(AGY_SETTINGS)) {
+    try { cfg = JSON.parse(fs.readFileSync(AGY_SETTINGS, 'utf8') || '{}'); } catch (e) { die(`${AGY_SETTINGS} — некоректний JSON (${e.message}); виправ вручну, я його не чіпаю`); }
+  }
+  cfg.permissions = cfg.permissions ?? {};
+  const addTo = (key, rules) => {
+    const cur = Array.isArray(cfg.permissions[key]) ? cfg.permissions[key] : [];
+    const added = rules.filter((r) => !cur.includes(r));
+    cfg.permissions[key] = [...cur, ...added];
+    return added;
+  };
+  const added = [...addTo('allow', allow), ...addTo('deny', deny)];
+  if (added.length && !dry) {
+    fs.mkdirSync(path.dirname(AGY_SETTINGS), { recursive: true });
+    if (fs.existsSync(AGY_SETTINGS)) fs.copyFileSync(AGY_SETTINGS, `${AGY_SETTINGS}.bak.${Date.now()}`);
+    fs.writeFileSync(AGY_SETTINGS, JSON.stringify(cfg, null, 2) + '\n');
+  }
+  return added;
+}
+
+/** Запускає CLI провайдера і повертає { ok, text, raw }. */
+function runCli(provider, prompt, { cwd, timeoutSec = 180, model, mode, image } = {}) {
+  let cmd; let args;
+  if (provider === 'gemini') {
+    cmd = 'agy'; args = ['-p', prompt, '--output-format', 'json', '--mode', mode ?? 'accept-edits', ...(model ? ['--model', model] : [])];
+  } else {
+    cmd = 'codex'; args = ['exec', '--skip-git-repo-check', '-s', mode ?? 'workspace-write', ...(model ? ['-m', model] : []), ...(image ? ['-i', image] : []), prompt];
+  }
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutSec * 1000, maxBuffer: 1 << 28 });
+  const raw = `${r.stdout ?? ''}${r.stderr ? `\n${r.stderr}` : ''}`;
+  if (r.error) return { ok: false, text: '', raw: r.error.code === 'ETIMEDOUT' ? `timeout ${timeoutSec}s` : r.error.message, status: null };
+  if (provider === 'gemini') {
+    try {
+      const j = JSON.parse(r.stdout);
+      return { ok: j.status === 'SUCCESS' && Boolean(j.response), text: j.response ?? '', raw, status: j.status };
+    } catch { return { ok: false, text: '', raw, status: r.status }; }
+  }
+  return { ok: r.status === 0 && Boolean((r.stdout ?? '').trim()), text: (r.stdout ?? '').trim(), raw, status: r.status };
+}
+
+/** Чому зовнішній запуск не вдався — одним словом, щоб PM знав, що казати користувачу. */
+function failReason(raw) {
+  if (/permission|auto-denied|not allowed/i.test(raw)) return 'PERMISSIONS';
+  if (/quota|rate.?limit|exhausted|resource.?exhausted|\b429\b/i.test(raw)) return 'QUOTA';
+  if (/sign.?in|log.?in|unauthori[sz]ed|credential|not authenticated|\b401\b/i.test(raw)) return 'AUTH';
+  if (/timeout/i.test(raw)) return 'TIMEOUT';
+  return 'UNKNOWN';
+}
+
+/** Створює крихітний PNG одного кольору (для перевірки «зору» ШІ без зовнішніх залежностей). */
+function writeSolidPng(file, [r, g, b], size = 64) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (buf) => { let c = 0xffffffff; for (const x of buf) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const body = Buffer.concat([Buffer.from(type), data]); const sum = Buffer.alloc(4); sum.writeUInt32BE(crc(body)); return Buffer.concat([len, body, sum]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: size }, () => [r, g, b]).flat())]);
+  const raw = Buffer.concat(Array.from({ length: size }, () => row));
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
+/** Перевірка, що провайдер вміє те, що треба тестувальнику: відповідати і запускати команди без питань. */
+function probeProvider(provider) {
+  const hello = runCli(provider, 'Відповідай одним словом: ok', { cwd: os.tmpdir(), timeoutSec: 120 });
+  if (!hello.ok) return { ok: false, step: 'auth', reason: failReason(hello.raw), detail: hello.raw.trim().slice(0, 400) };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-probe-'));
+  const marker = `probe-${crypto.randomBytes(3).toString('hex')}.txt`;
+  fs.writeFileSync(path.join(dir, marker), 'ok\n');
+  try {
+    const r = runCli(provider, 'Виконай команду ls у поточній папці та напиши назву файла, який там лежить.', { cwd: dir, timeoutSec: 180 });
+    if (!(r.ok && (r.text.includes(marker) || r.raw.includes(marker)))) return { ok: false, step: 'commands', reason: failReason(r.raw), detail: r.raw.trim().slice(0, 400) };
+    // «очі»: ШІ має справді бачити зображення, а не вгадувати за назвою файла
+    writeSolidPng(path.join(dir, 'probe-vision.png'), [220, 20, 20]);
+    const v = runCli(provider, 'Відкрий зображення probe-vision.png у поточній папці і подивись на нього. Назви його основний колір одним словом (англійською).', { cwd: dir, timeoutSec: 180, image: path.join(dir, 'probe-vision.png') });
+    if (v.ok && /\bred\b|червон/i.test(v.text)) return { ok: true };
+    return { ok: false, step: 'vision', reason: v.ok ? 'NO_VISION' : failReason(v.raw), detail: (v.text || v.raw).trim().slice(0, 300) };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+/** Доводить провайдера до робочого стану: встановлення → вхід → дозволи → перевірка. Повертає true, якщо все працює. */
+async function ensureProvider(provider, kinds, { interactive, yes }) {
+  const p = QA_PROVIDERS[provider];
+  const ok = (m) => log(`  ✔ ${m}`); const warn = (m) => log(`  ⚠ ${m}`);
+  log(`\n▶ ${p.label}`);
+  // 1. Інструмент встановлений?
+  if (!which(p.bin)) {
+    warn(`${p.bin} не знайдено в PATH`);
+    if (interactive && await askYes(`Встановити зараз? Виконаю: ${p.install}`)) {
+      spawnSync('bash', ['-c', p.install], { stdio: 'inherit' });
+      if (!which(p.bin)) { warn(`Встановлено, але ${p.bin} ще не в PATH — відкрий новий термінал і запусти \`${PL} qa-setup\` ще раз`); return false; }
+    } else { warn(`Встанови сам: ${p.install} — і запусти \`${PL} qa-setup\` ще раз`); return false; }
+  }
+  ok(`${p.bin} знайдено`);
+  // 2. Дозволи для безголового режиму (agy). Для codex їх задає прапорець -s sandbox.
+  if (provider === 'gemini') {
+    const allow = [...AGY_ALLOW_BASE, ...(kinds.includes('mobile') ? AGY_ALLOW_MOBILE : [])];
+    const missing = mergeAgySettings(allow, AGY_DENY, { dry: true });
+    if (!missing.length) ok('дозволи в settings.json вже є');
+    else {
+      log(`  Додам у ${AGY_SETTINGS}:\n    ${missing.join('\n    ')}`);
+      log('  (це глобальні налаштування agy; створю копію файла; node/npx дозволяють багато, тож це захист від випадковостей, а не від зловмисності)');
+      if (yes || (interactive && await askYes('Додати ці дозволи?'))) { mergeAgySettings(allow, AGY_DENY); ok('дозволи додано'); }
+      else { warn('без дозволів тестувальник не зможе запускати команди — пропустив'); return false; }
+    }
+  }
+  // 3. Вхід + перевірка здібностей.
+  let probe = probeProvider(provider);
+  if (!probe.ok && probe.step === 'auth' && (probe.reason === 'AUTH' || probe.reason === 'UNKNOWN') && interactive) {
+    log(`  Потрібен вхід. Зараз відкриється ${p.bin}: увійди акаунтом з підпискою і вийди (/exit або Ctrl+C).`);
+    spawnSync(p.bin, provider === 'codex' ? ['login'] : [], { stdio: 'inherit' });
+    probe = probeProvider(provider);
+  }
+  if (probe.ok) { ok('перевірка пройшла: відповідає, запускає команди без питань і бачить зображення'); return true; }
+  warn(`перевірка не пройшла на кроці "${probe.step}" (${probe.reason}): ${probe.detail}`);
+  if (probe.reason === 'AUTH') warn(`Вхід не виконано: запусти \`${p.bin}\` у терміналі, увійди, потім \`${PL} qa-setup\``);
+  if (probe.reason === 'PERMISSIONS') warn(`Дозволи не спрацювали. Подивись лог ~/.gemini/antigravity-cli/log/ (рядок "ignoring invalid allow entry" = правило з помилкою)`);
+  if (probe.reason === 'QUOTA') warn('Вичерпано ліміт підписки — спробуй пізніше');
+  if (probe.step === 'vision') warn('ШІ не бачить зображень через цей CLI, а тестувальнику «очі» потрібні: тестувальник лишається на Claude (або спробуй іншого провайдера).');
+  return false;
+}
+
+/** Майстер: вибір провайдера тестувальника + все налаштування. Без аргументів у терміналі — діалог. */
+async function cmdQaSetup({ flags }) {
+  const root = findRoot(process.cwd());
+  const ws = root ? loadWorkspace().ws : null;
+  const interactive = isTty() && !flags.yes;
+  const detectedKinds = [ws?.e2e?.path && 'web', ws?.e2eMobile?.path && 'mobile'].filter(Boolean);
+  const kinds = flags.kind && flags.kind !== 'all' ? [flags.kind] : (detectedKinds.length ? detectedKinds : ['web']);
+  if (kinds.some((k) => !QA_FILE[k])) die('--kind: web | mobile | all');
+
+  if (flags.check) {
+    for (const k of kinds) log(`${k}: ${qaProvider(ws, k)}`);
+    const used = [...new Set(kinds.map((k) => qaProvider(ws, k)).filter((x) => x !== 'claude'))];
+    for (const pr of used) { const r = QA_PROVIDERS[pr].bin && which(QA_PROVIDERS[pr].bin) ? probeProvider(pr) : { ok: false, reason: 'NOT_INSTALLED', detail: '' }; log(`${r.ok ? '✔' : '⚠'} ${pr}: ${r.ok ? 'працює' : `${r.reason} ${r.detail ?? ''}`}`); if (!r.ok) process.exitCode = 1; }
+    return;
+  }
+
+  const choice = {};
+  for (const k of kinds) {
+    let pr = flags.provider;
+    if (!pr && interactive) {
+      log(`\nЧим тестувати ${k === 'web' ? 'веб (Playwright)' : 'мобільне (Maestro)'}? Зараз: ${qaProvider(ws, k)}`);
+      const names = Object.keys(QA_PROVIDERS);
+      names.forEach((n, i) => log(`  ${i + 1}) ${QA_PROVIDERS[n].label}`));
+      pr = names[Number(await ask('Номер:', String(names.indexOf(qaProvider(ws, k)) + 1))) - 1];
+    }
+    if (!pr) die('Вкажи провайдера: --provider claude|gemini|codex (або запусти без аргументів у терміналі для діалогу)');
+    if (!QA_PROVIDERS[pr]) die(`Невідомий провайдер "${pr}": claude | gemini | codex`);
+    choice[k] = pr;
+  }
+
+  let allOk = true;
+  for (const pr of new Set(Object.values(choice).filter((x) => x !== 'claude'))) {
+    const forKinds = kinds.filter((k) => choice[k] === pr);
+    if (forKinds.includes('mobile')) log('\nУвага: мобільне тестування зовнішнім ШІ (симулятор + Maestro) ще не перевірене на практиці — почни з веба.');
+    if (!(await ensureProvider(pr, forKinds, { interactive, yes: Boolean(flags.yes) }))) allOk = false;
+  }
+  if (!allOk) { log(`\n✖ Вибір НЕ збережено: поки перевірка не пройде, тестувальник лишається як був. Виправ кроки вище і запусти \`${PL} qa-setup\` ще раз.`); process.exitCode = 1; return; }
+  if (!root) { log(`\n✔ Інструмент готовий. Щоб зберегти вибір, запусти це в папці проєкту (де є .pipeline/workspace.json).`); return; }
+  ws.qa = { ...(ws.qa ?? { defaultDepth: 'ask' }), providers: { ...(ws.qa?.providers ?? {}), ...choice } };
+  ws.qa.fallback = ws.qa.fallback ?? 'ask';
+  writeJson(path.join(root, MANIFEST_REL), ws);
+  log(`\n✔ Збережено в workspace.json: ${Object.entries(choice).map(([k, v]) => `${k} → ${v}`).join(', ')} (якщо зовнішній ШІ підведе: qa.fallback = "${ws.qa.fallback}")`);
+}
+
+/** Інструкції агента без frontmatter (беремо з ~/.claude/agents, або з репозиторію кіта). */
+function agentBody(kind) {
+  const candidates = [path.join(os.homedir(), '.claude', 'agents', QA_AGENT[kind]), path.join(KIT_DIR, '..', 'agents', QA_AGENT[kind])];
+  const file = candidates.find((f) => fs.existsSync(f)) ?? die(`Не знайшов інструкції тестувальника ${QA_AGENT[kind]}`);
+  return fs.readFileSync(file, 'utf8').replace(/^---[\s\S]*?\n---\n/, '');
+}
+
+/** Запускає зовнішнього тестувальника для завдання, перевіряє результат і ставить штамп. */
+async function cmdQaRun({ pos, flags }) {
+  const id = pos[0];
+  const { root, ws } = loadWorkspace();
+  const st = id ? loadState(root, id) : die('Usage: qa-run <task-id> --kind web|mobile [--depth d] [--partial] [--note "..."]');
+  const kind = flags.kind ?? (st.qa?.length === 1 ? st.qa[0] : null) ?? die('--kind web|mobile');
+  if (!QA_FILE[kind]) die('--kind: web | mobile');
+  const provider = qaProvider(ws, kind);
+  if (provider === 'claude') die(`Для ${kind} провайдер — claude: викликай агента ${QA_AGENT[kind].replace('.md', '')}`, 5);
+  const depth = flags.depth ?? taskDepth(root, ws, id) ?? die('Не задано глибину тестування (--depth smoke|deep|exhaustive)');
+  const dir = taskDir(root, id);
+  const reportFile = path.join(dir, QA_FILE[kind]);
+  const gapsFile = path.join(dir, 'qa-ext-gaps.md');
+  const specPath = `docs/specs/${id}.md`;
+  const prev = fs.existsSync(gapsFile) ? `\n## Doubts from the previous run (fix these first)\n${fs.readFileSync(gapsFile, 'utf8')}\n` : '';
+  const prompt = [
+    `# External tester run — task ${id}`,
+    '',
+    `You are the QA tester of a multi-agent team, started through a command line tool (not Claude). Everything below is your complete job description.`,
+    `- Where it says Read/Write/Edit/Bash, use your own file and terminal tools. Ignore any "tools:" or "model:" lines.`,
+    `- Run commands from the workspace root (your current directory). \`node ~/.claude/pipeline/pipeline.mjs\` is available.`,
+    `- NEVER change application code, only files under .pipeline/${id}/ (and at most one optional regression test under the e2e folder).`,
+    `- You have no browser tools of your own: use ONLY \`node ~/.claude/pipeline/pipeline.mjs eyes …\`, \`mail …\` and \`compare …\` to see and use the app. Evidence must be files made by these commands. The time limit is enforced by them.`,
+    `- Do NOT run the \`stamp\` command and do not commit: the orchestrator does both after you finish.`,
+    `- Write the report to .pipeline/${id}/${QA_FILE[kind]} (format: see the playbook, section 6) and run \`node ~/.claude/pipeline/pipeline.mjs eyes finish --task ${id}${kind === 'mobile' ? ' --kind mobile' : ''}\`. Your final message must be the short reply described at the end of the instructions.`,
+    '',
+    `Task ${id}. Spec: ${specPath}. Depth: ${depth}.${flags.partial ? ' This is a PARTIAL run (see "Partial requests").' : ''}`,
+    flags.note ? `Extra instruction from the orchestrator: ${flags.note}` : '',
+    prev,
+    '---',
+    agentBody(kind),
+  ].join('\n');
+  fs.mkdirSync(dir, { recursive: true });
+  const promptFile = path.join(dir, 'qa-prompt.md');
+  fs.writeFileSync(promptFile, prompt);
+
+  const before = fingerprint(st, auditSpecs(ws));
+  const started = Date.now();
+  // ліміт на весь запуск: час тестування ×1.6 + запас; мобільне ще й на першу збірку застосунку
+  const timeoutSec = Number(ws.qa?.timeoutSec ?? Math.round(((ws.qa?.budgetMin?.[depth] ?? BUDGET_MIN[depth]) * 1.6 + 5 + (kind === 'mobile' ? 40 : 0)) * 60));
+  log(`▶ ${kind}-тестувальник: ${provider}, глибина ${depth}, ліміт ${timeoutSec}s (лог: .pipeline/${id}/qa-ext.log)`);
+  const r = runCli(provider, `Прочитай файл .pipeline/${id}/qa-prompt.md і виконай усе, що там написано. Це твоє завдання повністю.`,
+    { cwd: root, timeoutSec, model: ws.qa?.models?.[kind] ?? ws.qa?.model, mode: provider === 'codex' ? (ws.qa?.codexSandbox ?? 'workspace-write') : 'accept-edits' });
+  fs.writeFileSync(path.join(dir, 'qa-ext.log'), r.raw);
+
+  const fail = (reason, detail) => {
+    console.log(`EXTERNAL_FAILED: ${reason}${detail ? ` — ${detail}` : ''}`);
+    console.log(`Fallback: ${ws.qa?.fallback === 'claude' ? 'claude (автоматично)' : 'ask (спитай користувача)'}`);
+    process.exit(6);
+  };
+  if (!r.ok) fail(failReason(r.raw), r.raw.trim().split('\n').slice(-3).join(' | ').slice(0, 300));
+  // Тестувальник не має чіпати код застосунку (тести й .pipeline виключені з цього відбитка).
+  if (fingerprint(st, auditSpecs(ws)) !== before) fail('CODE_MODIFIED', 'зовнішній ШІ змінив код застосунку, а не лише тести — перевір `git diff` і відкоти зайве');
+  if (!fs.existsSync(reportFile) || fs.statSync(reportFile).mtimeMs < started - 1000) fail('NO_REPORT', `${QA_FILE[kind]} не створено`);
+  const report = readJson(reportFile, null) ?? fail('NO_REPORT', `${QA_FILE[kind]} — некоректний JSON`);
+  if (!['PASS', 'FAIL'].includes(report.verdict)) fail('NO_REPORT', `у ${QA_FILE[kind]} немає verdict PASS|FAIL`);
+
+  await cmdEyes({ pos: ['stop'], flags: { task: id } }).catch(() => {}); // закрити браузер/симулятор-сервіси, якщо тестувальник забув
+  const fin = finalizeReport(root, id, kind, CATEGORIES);
+  if (!fin.ok) {
+    fs.writeFileSync(gapsFile, fin.problems.map((p) => `- ${p}`).join('\n') + '\n');
+    log(`⚠ звіт не пройшов перевірку проти журналу eyes:\n  - ${fin.problems.slice(0, 15).join('\n  - ')}\nЗапусти qa-run ще раз — зауваження підуть у промпт автоматично.`);
+    process.exit(2);
+  }
+  let stamped = false;
+  if (!flags.partial) {
+    const cov = coverageReport(root, ws, id, kind);
+    if (!cov.ok) {
+      fs.writeFileSync(gapsFile, cov.problems.map((p) => `- ${p}`).join('\n') + '\n');
+      log(`⚠ Покриття нижче глибини "${cov.depth}":\n  - ${cov.problems.join('\n  - ')}\nЗапусти qa-run ще раз — прогалини підуть у промпт автоматично.`);
+      process.exit(2);
+    }
+    fs.rmSync(gapsFile, { force: true });
+    await cmdStamp({ pos: [id, kind === 'web' ? 'qa' : 'qa-mobile'] });
+    stamped = true;
+  }
+  const results = report.results ?? [];
+  const failed = results.filter((x) => x.status === 'failed');
+  log(`\nVERDICT: ${report.verdict}${report.reason ? ` (reason: ${report.reason})` : ''} — passed ${results.length - failed.length}/${results.length}${stamped ? ', штамп поставлено' : ', частковий запуск без штампа'}`);
+  for (const f of failed) log(`  ✖ ${f.ac}: ${f.error ?? ''} [owner: ${f.owner_hint ?? 'unknown'}]${f.flaky ? ' (flaky)' : ''}`);
+  log(`\nВідповідь тестувальника:\n${r.text.split('\n').slice(0, 25).join('\n')}`);
+}
+
+// ------------------------------------------------------ eyes / mail / compare (див. eyes.mjs)
+/** Ідентифікатор останньої незавершеної задачі (або null). */
+function currentTaskId(root) {
+  const db = readJson(tasksPath(root), { tasks: [] });
+  const open = [...db.tasks].filter((t) => fs.existsSync(statePath(root, t.id)) && (t.status === 'IN_PROGRESS' || t.status === 'BLOCKED'))
+    .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))[0];
+  return open?.id ?? null;
+}
+/** Готує симулятор і застосунок для сесії `pl eyes start mobile` (без прогону сценаріїв). */
+async function mobilePrepare({ root, ws, id, platform, started }) {
+  const st = loadState(root, id);
+  const svc = st.services.map((n) => getService(ws, n)).find((s) => s.type === 'mobile') ?? ws.services.find((s) => s.type === 'mobile') ?? die('У workspace.json немає мобільного застосунку.');
+  const plat = platform ?? platformsFor(ws, svc, taskDepth(root, ws, id))[0];
+  if (!svc.mobile.platforms.includes(plat)) die(`${svc.name} не підтримує ${plat}`);
+  if (plat === 'ios' && process.platform !== 'darwin') die('iOS-симулятор потрібен macOS + Xcode');
+  const need = ['maestro', ...(plat === 'ios' ? ['xcrun'] : ['adb', 'emulator'])].filter((b) => !which(b));
+  if (need.length) die(`Немає інструментів для ${plat}: ${need.join(', ')} (README → Mobile QA setup)`);
+  const r = await simPlatform({ root, ws, st, id, svc, platform: plat, flags: { prepare: true }, started });
+  if (r.error) throw new Error(r.error);
+  return { platform: plat, deviceId: r.deviceId, deviceName: r.device, appId: svc.mobile.appId[plat], service: svc.name };
+}
+/** Те, що потрібно eyes.mjs від рушія. */
+const eyesCtx = () => ({ die, log, loadWorkspace, which, startBackground, taskDepth, dependencyClosure, currentTaskId, mobilePrepare, CATEGORIES });
+const cmdEyes = async (a) => (await import('./eyes.mjs')).cmdEyes(eyesCtx(), a);
+const cmdMail = async (a) => (await import('./eyes.mjs')).cmdMail(eyesCtx(), a);
+const cmdCompare = async (a) => (await import('./eyes.mjs')).cmdCompare(eyesCtx(), a);
+
 function cmdTemplate({ pos }) {
   const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', layout: 'layout-checks.ts', 'testing-guide': 'testing-guide.md' };
   const f = map[pos[0]] ?? die(`Usage: template <${Object.keys(map).join('|')}>`);
@@ -1782,6 +2112,11 @@ const HELP = `Claude Team Kit — ${PL} <command>
   add <id> <svc,..>              add services/projects to a running task (branches in their repos)
   stamp <id> <qa|qa-mobile>      tie a QA verdict to the current code (commit requires a fresh stamp; refused if coverage < depth)
   coverage <id> [mobile|web]     are there enough test cases and categories for the task's QA depth?
+  qa-setup [--provider claude|gemini|codex] [--kind web|mobile|all] [--yes] [--check]
+                                 choose who runs the tester (Claude / Gemini via agy / ChatGPT via codex): installs, signs in, sets permissions, tests, saves
+  qa-provider <web|mobile>       which provider tests this kind (claude | gemini | codex)
+  qa-run <id> --kind web|mobile [--depth d] [--partial] [--note ".."]
+                                 run the external tester, check coverage, stamp (exit 6 = external failed, 2 = coverage gaps)
   playbook                       the tester's case catalogue (forms, fields, gestures, interruptions, network…)
   scaffold | doctor              set up / check the workspace
   template <workspace|spec|playwright|layout|mobile-flow|testing-guide>
@@ -1800,7 +2135,7 @@ const COMMANDS = {
   playbook: () => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  review: cmdReview, waive: cmdWaive, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),
