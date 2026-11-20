@@ -40,6 +40,9 @@ Start from `PL template design`. Required sections (the gate refuses the hand-ov
 - The `data-testid` / `testID` names from the spec stay unchanged; new ones go in the Screens section.
 - Finish with `PL mark <id> design=done` (it checks the sections).
 
+## 5a. Provider without vision
+If `TEAM_KIT_NO_VISION=1` (DeepSeek/Kimi profile), you cannot read PNGs. Keep the layout audit, rely on exact numbers and contrast math, and note the skipped visual check in Open points. Do not pretend to have looked.
+
 ## 6. Rules
 - WRITE only `docs/design/` and `.pipeline/<id>/`. NEVER touch application code, contracts, specs (tell the orchestrator what to add to the spec), infra.
 - Do not redesign what the request did not ask for; keep the rest of the app's look.

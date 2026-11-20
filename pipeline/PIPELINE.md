@@ -14,7 +14,7 @@ You do NOT write service code yourself — only specs, contracts and docs.
 | `team-frontend` | one **web** frontend (type `frontend`) per call | `Task <id>. Service: <name>. Spec: docs/specs/<id>.md` |
 | `team-mobile` | one **React Native / Expo** app (type `mobile`) per call | `Task <id>. Service: <name>. Spec: docs/specs/<id>.md` |
 | `team-scout` | **Scout** (Haiku): finds files, patterns, contracts and tests relevant to the task; read-only | `Scout task <id>. Request: <…>. Services: <…>. Write to .pipeline/<id>/context.md.` |
-| `team-designer` | **Designer** (Opus): called ONLY for visual work; studies the existing design language, designs with exact tokens/states/texts, checks its own mockup by rendering it, writes `docs/design/<id>.md` for the developers | `Task <id>. Spec: docs/specs/<id>.md. Request: <the user's words>.` |
+| `team-designer` | **Designer** (Opus on M/L, Sonnet on S; see Complexity): called ONLY for visual work; studies the existing design language, designs with exact tokens/states/texts, checks its own mockup by rendering it, writes `docs/design/<id>.md` for the developers | `Task <id>. Spec: docs/specs/<id>.md. Request: <the user's words>.` |
 | `team-reviewer` | **Pretester**: blind code review of the diff (patterns, anti-patterns, bugs, security) — knows nothing about the spec | the exact review prompt below — nothing else |
 | `team-qa` | web tester: looks at the real app in a browser with its own eyes (`pl eyes`), breaks it on purpose, checks widths and consistency with emails — works from the spec only | `Task <id>. Spec: docs/specs/<id>.md` |
 | `team-qa-mobile` | mobile tester: drives the real app on the simulator/emulator with its own eyes (`pl eyes`) — works from the spec only | `Task <id>. Spec: docs/specs/<id>.md` |
@@ -111,6 +111,27 @@ Coding conventions every agent follows (comment language etc.): `$PL conventions
 **6. DEPLOY** (optional; only if the user explicitly asked for it in this request)
 - `$PL deploy <env> --task <id>`. Exit code 4 means approval is required: ask the user plainly ("Deploy <id> to <env>? yes/no"); only after an explicit yes run it again with `--approved`. By default the flow ends at the commit.
 
+## Complexity (S/M/L) and model routing (saves the Claude limit)
+In PLAN, right after `$PL start`, classify the task and record it: `$PL mark <id> complexity=<S|M|L>`.
+| Level | When | Examples |
+|---|---|---|
+| **S** | 1–2 files, local bug fix, text/style tweak, a fix after review/QA, simple tests | fix a form validation, adjust a margin, add a filter field |
+| **M** | typical feature on existing patterns (1–2 services), new screen/endpoint without risky changes | new CRUD screen, a tab with an API integration |
+| **L** | new architecture, DB migrations, public contract changes, money/billing/auth/security, redesign, >10 files | payment flow, schema change synced across mobile/web/api |
+`/fix` defaults to **S**; raise it to M/L only when the fix touches the DB, contracts or architecture. When unsure between two levels choose the lower one and say so.
+**Before every subagent call run `$PL model <agent> <id>` and pass the printed word as the call's `model` parameter** (it overrides the default in `agents/*.md`; `$PL model all <id>` shows the whole table). Examples: S → everything `sonnet`, scout `haiku`, no `opus` at all; L → `team-reviewer` and `team-designer` on `opus`; `--core` gives `team-backend` `opus` for the core of an L task (money, auth, migrations). Do not improvise models; do not call `opus` where the table says otherwise.
+The orchestrator itself should run on **Sonnet**; the user switches to `/model opus` only to plan an L task.
+
+## Vision Guard (providers without image input)
+Profiles for text-only providers (`claude-ds`, `claude-kimi`…) set `TEAM_KIT_NO_VISION=1` (`$PL status` shows `(no vision)`).
+- Before QA, `$PL qa-provider <web|mobile>` already checks it. If the provider is `gemini`/`codex` → `team-qa-ext` as usual. If it is `claude` it prints `NO_VISION` and exits 7: **stop before QA**, tell the user to run `/qa-provider gemini` or to finish QA in a normal `claude` session (`/resume <id>`). Never start `team-qa`/`team-qa-mobile` in such a session.
+- If `design=yes` in such a session, warn once: the designer cannot look at its mockup. Offer (a) skip the visual self-check (the layout audit still runs; it is noted in the design doc) or (b) do the design step in a vision session first.
+
+## Switching provider mid-task (limit reached → another provider)
+- Never `claude --resume` across providers: the old chat holds Anthropic-only blocks (thinking signatures) that other providers reject.
+- Open a **new, clean session** on the new provider (`claude-ds`, `claude-ds-fast`, `claude-kimi`, or plain `claude` again) and run `/resume <task-id>`: everything lives on disk (`state.json`, spec, artifacts).
+- `/resume` runs `$PL resume-info <id>`: stage, branches, uncommitted changes per repo, gates, current provider/model. If BUILD was interrupted with uncommitted changes, give the developer the file list as context («перевір незавершені правки та дороби за спекою»); never restart from scratch or overwrite silently.
+
 ## Direct commands (user steers instead of the full chain)
 The user can call single steps. Each one works inside a task, so the gates still protect the commit.
 
@@ -149,6 +170,9 @@ Triggered when a loop reaches its limit (3 rounds) or the user stops the task. R
 - Developers get the spec path, never the chat transcript.
 - Read only `verdict` / `STATUS` lines of artifacts unless a gate failed.
 - Agents reply in ≤ 15 lines; details go to `.pipeline/<id>/<role>-<service>.md|json`.
+- Read only `.pipeline/<id>/context.md` and the agent's short final reply; never pull raw diffs or whole files into this chat without a need.
+- **After a successful `/commit`** (or DONE) end the report with one line: «Перед наступною задачею виконай `/clear`: не тягнемо 100k+ токенів історії в новий цикл». Everything needed is on disk (`.pipeline/<id>/`, specs), a clear loses nothing.
+- If `.pipeline/workspace.json` has `qa.providers` set to `gemini` or `codex` for the kind, ALWAYS use `team-qa-ext` (`haiku`): it takes the heavy screenshot QA off the Claude limit.
 
 ## Language
 Everything you say to the user is in **{{REPLY_LANGUAGE}}**: questions, spec summary, stage lines, explanations of failures, the final report.

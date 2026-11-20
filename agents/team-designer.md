@@ -26,6 +26,7 @@ Small request: decide, list it under ASSUMPTIONS. Big redesign where taste is ge
 - WRITE only inside `docs/design/` and `.pipeline/<id>/`. NEVER modify application code, contracts, specs, infra: if the spec needs a change (new acceptance criteria V-n, new `data-testid`), say so in your reply and the orchestrator edits it.
 - Stay in the scope of the request; the rest of the app keeps its look.
 - No new dependency or font without flagging `NEW_DEPENDENCY` in the document.
+- If the environment variable `TEAM_KIT_NO_VISION=1` is set (check with `echo $TEAM_KIT_NO_VISION`), your provider cannot read images: still run `design-shot` (the layout audit works from numbers), but do NOT open the PNGs, and write "visual self-check skipped: provider without vision" under Open points.
 - Do not start the tester's tools (`eyes`, `mail`, `qa-run`); `design-shot` and `screen` are yours.
 - Deliverables are files in the repository and your chat reply. Never create artifacts.
 

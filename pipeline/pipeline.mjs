@@ -33,7 +33,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['eyes', 'mail', 'compare', 'design-shot', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
+const SAFE_ALLOW = ['model', 'resume-info', 'eyes', 'mail', 'compare', 'design-shot', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -593,7 +593,7 @@ function designProblems(root, id) {
 }
 function cmdMark({ pos }) {
   const [id, ...kv] = pos;
-  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<review|qa|verify>] [depth=smoke|deep|exhaustive] [design=yes|no|done] [note=<text>]');
+  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<review|qa|verify>] [depth=smoke|deep|exhaustive] [design=yes|no|done] [complexity=S|M|L] [note=<text>]');
   const { root, ws } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   const cur = db.tasks.find((t) => t.id === id) ?? die(`Unknown task "${id}"`);
@@ -612,8 +612,15 @@ function cmdMark({ pos }) {
       patch.depth = v;
       const st = loadState(root, id); st.depth = v; saveState(root, st);
     }
+    else if (k === 'complexity') {
+      const c = v.toUpperCase();
+      if (!['S', 'M', 'L'].includes(c)) die('complexity must be S | M | L');
+      patch.complexity = c;
+      const st = loadState(root, id); st.complexity = c; saveState(root, st);
+    }
     else if (k === 'design') {
       if (!['yes', 'no', 'done'].includes(v)) die('design must be yes | no | done');
+      if (v === 'yes' && noVision()) log('⚠ TEAM_KIT_NO_VISION=1: the designer cannot look at screenshots of the mockup (the provider has no image input). Options: (1) skip the visual self-check (the layout audit still runs), (2) run the design step in a session on a provider with vision (plain `claude`, then /resume).');
       if (v === 'done') { const bad = designProblems(root, id); if (bad.length) die(`Design is not ready for the developers:\n  - ${bad.join('\n  - ')}`, 2); }
       const st = loadState(root, id); st.design = v; saveState(root, st);
       patch.design = v;
@@ -640,12 +647,79 @@ function cmdStatus() {
   const { root } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   if (!db.tasks.length) return log('No tasks yet.');
-  table(['task', 'stage', 'status', 'services', 'loops', 'review', 'qa', 'verify', 'note'], db.tasks.map((t) => [
-    t.id, t.stage, t.status, (t.services ?? []).join(','),
+  log(`provider: ${activeProvider()}${noVision() ? ' (no vision)' : ''}${process.env.ANTHROPIC_MODEL ? ` · model ${process.env.ANTHROPIC_MODEL}` : ''}`);
+  table(['task', 'cx', 'stage', 'status', 'services', 'loops', 'review', 'qa', 'verify', 'note'], db.tasks.map((t) => [
+    t.id, t.complexity ?? '-', t.stage, t.status, (t.services ?? []).join(','),
     Object.entries(t.loops ?? {}).map(([k, v]) => `${k}:${v}`).join(' ') || '—',
     (verdictOf(root, t.id, 'review.json') ?? verdictOf(root, t.id, 'security.json') ?? '-'), verdictOf(root, t.id, 'qa.json') ?? '-', verdictOf(root, t.id, 'verify.json') ?? '-',
     t.note ?? '',
   ]));
+}
+
+// ------------------------------------------------- провайдер, vision і вибір моделі за складністю
+/** TEAM_KIT_NO_VISION=1 виставляє профіль текстового провайдера (claude-ds тощо): вхідні зображення не підтримуються. */
+const noVision = () => process.env.TEAM_KIT_NO_VISION === '1';
+/** Назва активного провайдера: з профілю (TEAM_KIT_PROVIDER), інакше за хостом ANTHROPIC_BASE_URL, інакше anthropic. */
+function activeProvider() {
+  if (process.env.TEAM_KIT_PROVIDER) return process.env.TEAM_KIT_PROVIDER;
+  try { const h = process.env.ANTHROPIC_BASE_URL ? new URL(process.env.ANTHROPIC_BASE_URL).host : 'anthropic'; return h === 'api.anthropic.com' ? 'anthropic' : h; } catch { return 'custom'; }
+}
+/** Матриця моделей за ролями й складністю задачі (S простий · M типовий · L великий/критичний). */
+const MODEL_MATRIX = {
+  'team-scout': { S: 'haiku', M: 'haiku', L: 'haiku' },
+  'team-backend': { S: 'sonnet', M: 'sonnet', L: 'sonnet' },
+  'team-frontend': { S: 'sonnet', M: 'sonnet', L: 'sonnet' },
+  'team-mobile': { S: 'sonnet', M: 'sonnet', L: 'sonnet' },
+  'team-reviewer': { S: 'sonnet', M: 'sonnet', L: 'opus' },
+  'team-designer': { S: 'sonnet', M: 'opus', L: 'opus' },
+  'team-qa': { S: 'sonnet', M: 'sonnet', L: 'sonnet' },
+  'team-qa-mobile': { S: 'sonnet', M: 'sonnet', L: 'sonnet' },
+  'team-qa-ext': { S: 'haiku', M: 'haiku', L: 'haiku' },
+};
+/** pl model <agent> [<task-id>] [--core] | pl model --all [<task-id>]: яку модель передати сабагенту (параметр model). */
+function cmdModel({ pos, flags }) {
+  const root = findRoot(process.cwd());
+  const wantAll = pos[0] === 'all' || flags.all;
+  const agent = wantAll ? null : (pos[0] ?? die('Usage: model <agent> [<task-id>] [--core]   |   model all [<task-id>]'));
+  const id = wantAll ? pos[1] ?? (root ? currentTaskId(root) : null) : pos[1] ?? (root ? currentTaskId(root) : null);
+  const st = root && id && fs.existsSync(statePath(root, id)) ? readJson(statePath(root, id)) : null;
+  const cx = st?.complexity ?? 'M';
+  const pick = (a) => {
+    const row = MODEL_MATRIX[a] ?? die(`Unknown agent "${a}". Known: ${Object.keys(MODEL_MATRIX).join(', ')}`);
+    return a === 'team-backend' && flags.core ? 'opus' : row[cx];
+  };
+  if (wantAll) {
+    log(`complexity ${cx}${st?.complexity ? '' : ' (not set, default M)'} · provider ${activeProvider()}`);
+    // Реальна модель провайдера для кожного рівня: з профілю (ANTHROPIC_DEFAULT_<РІВЕНЬ>_MODEL); на Anthropic рівень = сама модель
+    const real = (tier) => process.env[`ANTHROPIC_DEFAULT_${tier.toUpperCase()}_MODEL`] ?? (activeProvider() === 'anthropic' ? tier : '?');
+    return table(['agent', 'tier', 'runs as'], Object.keys(MODEL_MATRIX).map((a) => [a, pick(a), real(pick(a))]));
+  }
+  log(pick(agent)); // лише назва моделі: ПМ підставляє її в параметр model виклику сабагента
+}
+
+/** pl resume-info <id>: що лишилось недобитим після обриву (ліміт, зміна провайдера): етап, гілки, незакомічені правки, стан воріт. */
+function cmdResumeInfo({ pos }) {
+  const { root } = loadWorkspace();
+  const id = pos[0] ?? currentTaskId(root) ?? die('Usage: resume-info <task-id>');
+  const st = loadState(root, id);
+  const t = (readJson(tasksPath(root), { tasks: [] }).tasks.find((x) => x.id === id)) ?? {};
+  log(`task ${id}: stage ${t.stage ?? '?'}, ${t.status ?? '?'}, complexity ${st.complexity ?? 'not set'}, design ${st.design ?? 'not set'}, QA depth ${st.depth ?? 'not set'}`);
+  log(`now running on: ${activeProvider()}${process.env.ANTHROPIC_MODEL ? `, model ${process.env.ANTHROPIC_MODEL}` : ''}${noVision() ? ' (no vision)' : ''}`);
+  log(`gates: review ${verdictOf(root, id, 'review.json') ?? '-'} · qa ${verdictOf(root, id, 'qa.json') ?? verdictOf(root, id, 'qa-mobile.json') ?? '-'} · verify ${verdictOf(root, id, 'verify.json') ?? '-'}`);
+  let dirty = false;
+  for (const r of st.repos) {
+    const cur = gitOut(r.root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const files = git(r.root, ['status', '--short'], { allowFail: true }).stdout?.trim() ?? '';
+    const stat = git(r.root, ['diff', '--stat', 'HEAD'], { allowFail: true }).stdout?.trim() ?? '';
+    log(`\n${label(r)}: branch ${cur}${cur === r.branch ? '' : ` ✖ expected ${r.branch}`}`);
+    if (files) { dirty = true; log(`  uncommitted changes:\n${files.split('\n').map((l) => `    ${l}`).join('\n')}`); if (stat) log(`  ${stat.split('\n').pop()}`); }
+    else log('  clean (nothing uncommitted)');
+  }
+  const specFile = `docs/specs/${id}.md`;
+  log(`\nspec: ${fs.existsSync(path.join(root, specFile)) ? specFile : 'MISSING'}${fs.existsSync(path.join(root, 'docs', 'design', `${id}.md`)) ? ` · design: docs/design/${id}.md` : ''}`);
+  if (dirty && (t.stage ?? 0) <= 2) log('→ BUILD was interrupted: pass the listed files to the developer as context ("check the unfinished changes and finish them per the spec"); do not start from scratch and do not overwrite silently.');
+  else if (dirty) log('→ code changed after earlier stages: re-run the stale gates (diff → review → QA → verify) before /commit.');
+  else log('→ nothing uncommitted: continue from the first stage whose gate has not passed.');
 }
 
 function agentFor(type) {
@@ -1746,6 +1820,7 @@ function cmdDoctor() {
   const home = path.join(os.homedir(), '.claude');
   const settings = readJson(path.join(home, 'settings.json'), {});
   JSON.stringify(settings.hooks ?? {}).includes('pipeline.mjs') ? ok('guard hook installed') : warn('guard hook not found in ~/.claude/settings.json — re-run install.sh');
+  ok(`provider: ${activeProvider()}${noVision() ? ' (no vision: QA with screenshots goes through team-qa-ext)' : ''}`);
   for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-scout', 'team-designer', 'team-qa', 'team-qa-mobile', 'team-qa-ext']) {
     fs.existsSync(path.join(home, 'agents', `${a}.md`)) ? null : warn(`agent ${a} not installed in ~/.claude/agents`);
   }
@@ -1803,7 +1878,7 @@ const QA_PROVIDERS = {
 /** Глобальні налаштування Antigravity CLI: тут лежать дозволи для безголового режиму. */
 const AGY_SETTINGS = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
 /** Дозволи, потрібні тестувальнику (без коментарів у кінці рядка: agy тоді ігнорує правило мовчки). */
-const AGY_ALLOW_BASE = ['command(ls)', 'command(cat)', 'command(grep)', 'command(head)', 'command(tail)', 'command(mkdir)', 'command(pwd)', 'command(echo)', 'command(node)', 'command(npm)', 'command(npx)'];
+const AGY_ALLOW_BASE = ['command(ls)', 'command(cat)', 'command(grep)', 'command(head)', 'command(tail)', 'command(mkdir)', 'command(pwd)', 'command(echo)', 'command(node)', 'command(npm)', 'command(npx)', 'command(lsof)', 'command(ps)', 'command(pgrep)', 'command(sed)', 'command(find)', 'command(wc)', 'command(date)', 'command(sleep)', 'command(curl)'];
 const AGY_ALLOW_MOBILE = ['command(maestro)', 'command(xcrun)', 'command(adb)'];
 const AGY_DENY = ['command(rm -rf)', 'command(git push)'];
 const QA_FILE = { web: 'qa.json', mobile: 'qa-mobile.json' };
@@ -1820,7 +1895,14 @@ function cmdQaProvider({ pos }) {
   if (!QA_FILE[kind]) die('Usage: qa-provider <web|mobile>');
   const root = findRoot(process.cwd());
   const ws = root ? readJson(path.join(root, MANIFEST_REL), {}) : {};
-  log(qaProvider(ws, kind));
+  const prov = qaProvider(ws, kind);
+  log(prov);
+  // Vision Guard: текстовий провайдер (DeepSeek тощо) не бачить скріншотів, тестувальник на Claude у цій сесії безглуздий
+  if (prov === 'claude' && noVision()) {
+    log(`NO_VISION: the active provider (${activeProvider()}) has no image input, so the tester on "claude" cannot look at screenshots.`);
+    log(`Stop before QA and tell the user: either ${PL} qa-setup / /qa-provider gemini (the tester runs on Gemini through team-qa-ext), or finish QA in a normal Claude session (/resume <id> after \`claude\`).`);
+    process.exit(7);
+  }
 }
 
 /** Запитання в терміналі (лише коли є TTY). */
@@ -2027,6 +2109,9 @@ async function cmdQaRun({ pos, flags }) {
     `- You have no browser tools of your own: use ONLY \`node ~/.claude/pipeline/pipeline.mjs eyes …\`, \`mail …\` and \`compare …\` to see and use the app. Evidence must be files made by these commands. The time limit is enforced by them.`,
     `- Be lazy and smart: right after \`eyes start\` write .pipeline/${id}/eyes/plan.json (risk per AC, one representative per class of the test matrix, what you skip) and run \`node ~/.claude/pipeline/pipeline.mjs eyes plan --task ${id}\`. Format: playbook, section 0a. Do not test everything in a row; the footer of each command shows your action and screenshot budget.`,
     `- Do NOT run the \`stamp\` command and do not commit: the orchestrator does both after you finish.`,
+    `- SHELL RULES (your CLI runs in print mode: a command that needs confirmation is auto-denied and the WHOLE session is cancelled, so no report is written): run ONE simple command per call, with no pipes, no ';', no '&&', no '||', no redirects, no subshells, and only commands you already use for the job (ls, cat, grep, head, tail, node, npx, xcrun, lsof, ps, pgrep, curl). Never build, install or reinstall the app yourself (no expo/xcodebuild/pod, no 'npm run <script>' other than what the playbook names) and never edit package.json or any application file.`,
+    `- If the app does not start or shows a red error screen (for example 'No script URL provided'), do NOT investigate with your own commands: make one screenshot with \`eyes look\`, write the report with \`"verdict":"FAIL"\` and \`"reason":"ENV"\`, run \`eyes finish\`, and stop. An unfinished session without a report is the worst outcome.`,
+    `- Do not end your turn while an \`eyes\` command is still running in the background: wait for it, then continue. Finish only after the report is written and \`eyes finish\` has accepted it.`,
     `- Write the report to .pipeline/${id}/${QA_FILE[kind]} (format: see the playbook, section 6) and run \`node ~/.claude/pipeline/pipeline.mjs eyes finish --task ${id}${kind === 'mobile' ? ' --kind mobile' : ''}\`. Your final message must be the short reply described at the end of the instructions.`,
     '',
     `Task ${id}. Spec: ${specPath}. Depth: ${depth}.${flags.partial ? ' This is a PARTIAL run (see "Partial requests").' : ''}`,
@@ -2155,6 +2240,8 @@ const HELP = `Claude Team Kit — ${PL} <command>
   qa-run <id> --kind web|mobile [--depth d] [--partial] [--note ".."]
                                  run the external tester, check coverage, stamp (exit 6 = external failed, 2 = coverage gaps)
   playbook [design]              the tester's case catalogue (forms, fields, gestures, interruptions, network…); "playbook design" = the designer handbook
+  model <agent> [<id>] [--core]    the model to pass to a subagent for the task's complexity (S/M/L); "model all" shows the table
+  resume-info <id>               after an interruption: stage, branches, uncommitted changes, gates, active provider
   design-shot <file|url>         render a mockup (HTML) or the live app at several widths → PNGs + layout audit (for the designer)
   mark <id> design=yes|no|done   task needs a designer (yes), does not (no), design delivered and checked (done)
   scaffold | doctor              set up / check the workspace
@@ -2174,7 +2261,7 @@ const COMMANDS = {
   playbook: ({ pos }) => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, pos[0] === 'design' ? 'DESIGN_PLAYBOOK.md' : 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, model: cmdModel, 'resume-info': cmdResumeInfo, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),
