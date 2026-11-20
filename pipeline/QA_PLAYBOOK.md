@@ -3,21 +3,61 @@
 You are not a script runner. You open the real app, look at it, use it the way a person would, and judge what you see.
 Writing long test suites is NOT your job: the time limit is short (it is enforced) and every minute should go to looking and trying.
 
+## 0. Be lazy and smart (the most important rule)
+
+Your value is *knowing what is worth checking*, not checking everything. Every action costs time and every screenshot costs many tokens.
+- **Risk first.** Spend effort where a bug would hurt and where the change really touched. A rename of a label is not a payment flow.
+- **One representative per class.** Things that behave the same are one class: test one member. 12 languages are not 12 tests: take one long-text Latin (German), one with different script/diacritics (Ukrainian), one RTL if present. The same for screens, roles, currencies, device sizes.
+- **Expand only on failure.** If the representative passes, the class is done. If it fails, test one more member of that class: a bug in one usually sits in others, and you need to know how wide it is.
+- **Cheapest evidence first.** Text and the element list (`look` output, `text`, `compare`) before screenshots; open a screenshot with Read only when you must judge how something *looks*. Never "look" after every click.
+- **Don't re-prove.** Anything that passed is closed. No second pass "to be sure"; no re-running the whole flow because one step failed — fix the step and go on.
+- **Don't test what you were told not to** (spec: *Not to re-test*), what automated tests already cover (spec/`docs/testing`), or what the diff cannot influence.
+- **Stop at the answer.** When you know the verdict for a charter (pass with evidence, or fail with evidence), move on.
+- **Batch.** One `look` shows many things; one `sweep` covers all widths; one `text --out` captures a whole screen.
+The footer of every command shows `дій X/Y · скріншотів S/T`. Over the soft limit means you are wandering: wrap up the charter.
+
+## 0a. Triage (first 2 minutes, before any action)
+
+After `pl eyes start …` write `.pipeline/<id>/eyes/plan.json` and run `pl eyes plan` (it validates and logs it; the coverage gate requires it).
+
+```json
+{
+  "risks": [
+    { "ac": "AC-1", "risk": "high",   "why": "totals in the PDF are computed by new code" },
+    { "ac": "AC-2", "risk": "low",    "why": "only a label text changed" }
+  ],
+  "matrix": [
+    { "dimension": "language", "classes": [
+      { "name": "long-latin", "members": ["de", "fr", "es", "it"], "pick": ["de"], "why": "German has the longest words, cut text shows up first" },
+      { "name": "cyrillic",   "members": ["uk", "ru"],             "pick": ["uk"], "why": "different script and diacritics, font fallback in PDF" }
+    ] }
+  ],
+  "skip": [ { "what": "English screens", "why": "default language, covered by existing e2e" } ]
+}
+```
+- `risk` high = new logic, money, data loss, many users; medium = changed existing behaviour; low = copy/style only. Checks needed per AC: high = depth minimum, medium = half, low = 1.
+- `matrix`: use it when the task multiplies (languages × screens × roles × currencies × devices). Group members into classes of *similar behaviour* and pick one (rarely two) per class. **A pick may be at most ⅓ of the class** (the script refuses more).
+- `skip`: say what you consciously leave out and why. This is a report line, not a loophole: do not skip what the spec lists in Test focus.
+- Tag every check that belongs to the matrix with `"class": "<dimension>/<class>"` (e.g. `"class": "language/long-latin"`) so the gate can see the class is covered. A class that has a failed check must have ≥2 checks (expand).
+- **Time:** the plan is ten lines. If it takes longer than 2 minutes you are over-planning.
+
 ## 1. Depth, time and what must be covered
 
 | Depth | Time limit | Min. checks per AC | Categories that must appear in `checks` |
 |---|---|---|---|
-| `smoke` (поверхневе) | 8 min | 1 | `happy` · web: layout at 3 widths |
+| `smoke` (поверхневе) | 8 min | 1 (low-risk AC: 1) | `happy` · web: layout at 3 widths · matrix: one class per dimension |
 | `deep` (поглиблене) | 20 min | 2 | `happy`, `negative`, `boundary`, `state` · web: layout at 7 widths · mobile also `interrupt` |
 | `exhaustive` (дуже ретельне) | 45 min per platform | 4 | `happy`, `negative`, `boundary`, `state`, `navigation`, `interrupt`, `network`, `a11y`, `visual` · web: layout at 13 widths |
 
 - The time limit starts at `pl eyes start …` and is enforced: after it, every action is refused (`TIME_UP`). Check the clock in each command's last line; leave 2 minutes for the report.
 - A category that truly cannot apply goes into the report as `"not_applicable": { "network": "reason of at least 10 characters" }`.
 - The spec's **Consistency** section (ids `K-1`, `K-2`…) lists things that must look the same on two surfaces (app screen ↔ email ↔ PDF). Every one must be checked (section 4).
+- "Min. checks per AC" is for **high-risk** ACs; medium needs half, low needs 1 (your plan decides, section 0a). A matrix class needs one tagged check (smoke: one class per dimension is enough).
 - Check yourself: `pl coverage <id> web|mobile`.
 
 ## 2. Method: charter → act → look → decide
 
+0. **Triage first** (section 0a): risks, classes, what to skip. Then charters.
 1. **Charters, not test cases.** From the spec's acceptance criteria and *Test focus*, write 5–10 one-line missions in your head or in `.pipeline/<id>/eyes/charters.md` ("fill the form with an emoji name and send it", "open the quote on a phone and check the totals"). Nothing else to plan.
 2. **Start once:** `pl eyes start web` (or `pl eyes start mobile --platform ios`). It starts the needed services, opens the browser or simulator and starts the clock.
 3. **Loop:** act (`click`, `fill`, `tap`, `type`…) → `look` (a screenshot and a list of what is on screen; open the screenshot with Read) → decide: is this what the spec promises and what a normal person would expect? Not sure what is expected → mark the check `blocked` and ask (`STATUS: QUESTIONS`), never invent expected behaviour.
@@ -125,7 +165,7 @@ When the spec lists `K-n` items, or the task changes anything that is sent to a 
 Other surfaces (PDF, push text, export): get their text into a file, then `pl compare` the same way.
 
 ## 5. Time discipline
-- Smoke: no exploration beyond the ACs. Deep: ~⅓ of the time on free exploration after the ACs. Exhaustive: ~½.
+- Smoke: no exploration beyond the ACs. Deep: ~⅓ of the time on free exploration after the ACs, aimed at the high-risk areas from your plan. Exhaustive: ~½.
 - Don't re-check what already passed. After a failure, record it with evidence and move on; do not debug the app (you never read its code).
 - Take screenshots at decisions, not after every click: `look` only when you need to judge something.
 
@@ -135,7 +175,7 @@ Other surfaces (PDF, push text, export): get their text into a file, then `pl co
 {
   "task": "<id>", "verdict": "PASS | FAIL", "reason": null,
   "checks": [
-    { "id": "C1", "ac": "AC-1", "category": "happy", "what": "send a quote to a client from the preview",
+    { "id": "C1", "ac": "AC-1", "category": "happy", "class": "language/long-latin", "what": "send a quote to a client from the preview",
       "result": "passed | failed | blocked", "evidence": ["eyes/shots/004-preview.png"],
       "width": 375, "severity": "major", "note": "required for failed", "owner_hint": "frontend:web | backend:<service> | mobile:<app> | unknown" }
   ],

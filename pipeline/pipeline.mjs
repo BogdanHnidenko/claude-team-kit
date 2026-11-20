@@ -12,14 +12,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateReport, finalizeReport, journalPlatforms, playwrightFound, BUDGET_MIN } from './eyes.mjs';
+import { validateReport, finalizeReport, journalPlatforms, playwrightFound, BUDGET_MIN, validatePlan, readPlan } from './eyes.mjs';
 
 const KIT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PL = 'node ~/.claude/pipeline/pipeline.mjs';
 const MANIFEST_REL = path.join('.pipeline', 'workspace.json');
 const SERVICE_TYPES = ['frontend', 'mobile', 'backend', 'worker', 'infra', 'library', 'other'];
 const STATUSES = ['IN_PROGRESS', 'BLOCKED', 'DONE', 'FAILED'];
-const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags', 'reason', 'by', 'kind', 'provider', 'depth', 'note', 'widths', 'out', 'target', 'timeout', 'to', 'subject', 'name']);
+const VALUE_FLAGS = new Set(['task', 'type', 'file', 'platform', 'service', 'only', 'flows', 'tags', 'reason', 'by', 'kind', 'provider', 'depth', 'note', 'widths', 'out', 'target', 'timeout', 'to', 'subject', 'name', 'scheme', 'height', 'wait']);
 const PIPELINE_EXCLUDE = ':(exclude,glob).pipeline/**';
 
 // Files the blind auditor never sees: intent (specs, agent configs, pipeline
@@ -33,7 +33,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['eyes', 'mail', 'compare', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
+const SAFE_ALLOW = ['eyes', 'mail', 'compare', 'design-shot', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -488,6 +488,7 @@ function cmdCommit({ pos, flags }) {
     if (rv.blocking.length) problems.push(`review has ${rv.blocking.length} open blocking finding(s): ${rv.blocking.map((f) => f.id).join(', ')} — fix them or accept a compromise (waive)`);
     if (!st.diffAt || fs.statSync(path.join(dir, rv.file)).mtimeMs < Date.parse(st.diffAt)) problems.push(`${rv.file} is older than the last diff — re-run the reviewer`);
   }
+  if (st.design === 'yes') problems.push(`the task needs a designer and the design is not marked done: call team-designer, then ${PL} mark ${id} design=done`);
   const targets = Array.isArray(st.qa) ? st.qa : st.qa === 'skip' ? [] : ['web'];
   for (const t of targets) {
     const qa = readJson(path.join(dir, QA_FILES[t]), null);
@@ -581,9 +582,18 @@ function cmdRollback({ pos }) {
   log(`Recover: ${st.repos[0]?.branch && st.repos[0].branch !== st.repos[0].fromBranch ? `git checkout ${st.repos[0].branch} && ` : ''}git stash list | grep ${id} && git stash pop <stash@{n}>`);
 }
 
+/** Розділи, які мусить мати документ дизайну, щоб розробник не вгадував (docs/design/<id>.md). */
+const DESIGN_SECTIONS = [['Summary', /summary|огляд|ідея/i], ['Tokens', /tokens|токени/i], ['Screens', /screens|екрани/i], ['States', /states|стани/i], ['Visual acceptance', /visual acceptance|visual criteria|візуальн/i]];
+/** Перевіряє документ дизайну: файл існує й має всі обовʼязкові розділи. Повертає список проблем. */
+function designProblems(root, id) {
+  const file = path.join(root, 'docs', 'design', `${id}.md`);
+  if (!fs.existsSync(file)) return [`docs/design/${id}.md does not exist (the designer writes it)`];
+  const heads = [...fs.readFileSync(file, 'utf8').matchAll(/^#{2,3}\s+(.+)$/gm)].map((m) => m[1]);
+  return DESIGN_SECTIONS.filter(([, re]) => !heads.some((h) => re.test(h))).map(([n]) => `docs/design/${id}.md has no "${n}" section`);
+}
 function cmdMark({ pos }) {
   const [id, ...kv] = pos;
-  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<review|qa|verify>] [depth=smoke|deep|exhaustive] [note=<text>]');
+  if (!id || !kv.length) die('Usage: mark <task-id> [stage=<n>] [status=IN_PROGRESS|BLOCKED|DONE|FAILED] [loop=<review|qa|verify>] [depth=smoke|deep|exhaustive] [design=yes|no|done] [note=<text>]');
   const { root, ws } = loadWorkspace();
   const db = readJson(tasksPath(root), { tasks: [] });
   const cur = db.tasks.find((t) => t.id === id) ?? die(`Unknown task "${id}"`);
@@ -601,6 +611,12 @@ function cmdMark({ pos }) {
       if (!DEPTHS[v]) die(`depth must be one of ${Object.keys(DEPTHS).join(', ')}`);
       patch.depth = v;
       const st = loadState(root, id); st.depth = v; saveState(root, st);
+    }
+    else if (k === 'design') {
+      if (!['yes', 'no', 'done'].includes(v)) die('design must be yes | no | done');
+      if (v === 'done') { const bad = designProblems(root, id); if (bad.length) die(`Design is not ready for the developers:\n  - ${bad.join('\n  - ')}`, 2); }
+      const st = loadState(root, id); st.design = v; saveState(root, st);
+      patch.design = v;
     }
     else die(`Unknown key "${k}"`);
   }
@@ -1525,8 +1541,27 @@ function coverageReport(root, ws, id, kind) {
   if (reportProblems.length) problems.push(...reportProblems.slice(0, 15));
   const checks = (report?.checks ?? []).filter((c) => c.result !== 'blocked');
   const na = report?.not_applicable ?? {};
-  const perAc = acs.map((ac) => ({ ac, n: checks.filter((c) => c.ac === ac).length }));
-  for (const { ac, n } of perAc) if (n < rule.perAc) problems.push(`${ac}: ${n} check(s), need at least ${rule.perAc} for ${depth}`);
+  // План (ризики й вибірка з матриці): без нього тестувальник перевіряє все підряд. Мінімум перевірок залежить від ризику критерію.
+  const planRaw = readPlan(root, id);
+  const { problems: planProblems, plan } = validatePlan(planRaw, acs);
+  if (planProblems.length) problems.push(...planProblems.slice(0, 8).map((x) => `plan: ${x}`), `plan: write .pipeline/${id}/eyes/plan.json and run: ${PL} eyes plan (see ${PL} playbook, section "Triage")`);
+  const riskOf = new Map((plan?.risks ?? []).map((r) => [r.ac, r.risk]));
+  const needFor = (ac) => { const r = riskOf.get(ac) ?? 'high'; return r === 'low' ? 1 : r === 'medium' ? Math.max(1, Math.ceil(rule.perAc / 2)) : rule.perAc; };
+  const perAc = acs.map((ac) => ({ ac, n: checks.filter((c) => c.ac === ac).length, need: needFor(ac), risk: riskOf.get(ac) ?? null }));
+  for (const { ac, n, need, risk } of perAc) if (n < need) problems.push(`${ac}: ${n} check(s), need at least ${need} for ${depth}${risk ? ` (risk ${risk})` : ''}`);
+  // Матриця (мови × екрани тощо): по представнику від кожного класу еквівалентності; клас, де є падіння, розширюється.
+  const classCount = new Map();
+  const classFail = new Set();
+  for (const c of checks) if (c.class) { classCount.set(c.class, (classCount.get(c.class) ?? 0) + 1); if (c.result === 'failed') classFail.add(c.class); }
+  for (const d of plan?.matrix ?? []) {
+    const keys = d.classes.map((c) => `${d.dimension}/${c.name}`);
+    const covered = keys.filter((k) => classCount.has(k));
+    if (depth === 'smoke' ? !covered.length : covered.length < keys.length) {
+      const missing = keys.filter((k) => !classCount.has(k));
+      problems.push(`matrix ${d.dimension}: no check tagged "class" for ${(depth === 'smoke' ? keys : missing).join(', ')} (one representative per class is enough)`);
+    }
+    for (const k of keys) if (classFail.has(k) && (classCount.get(k) ?? 0) < 2) problems.push(`matrix ${k}: a check failed, so expand the class — test at least one more member of it (a bug in one member usually hits the others)`);
+  }
   const present = new Set(checks.map((c) => c.category));
   const required = [...rule.cats, ...(kind === 'mobile' && depth !== 'smoke' ? ['interrupt'] : [])];
   let widths = null;
@@ -1559,7 +1594,7 @@ function cmdCoverage({ pos, flags }) {
     const r = coverageReport(root, ws, id, kind);
     if (flags.json) { log(JSON.stringify({ kind, ...r })); ok &&= r.ok; continue; }
     log(`${r.ok ? '✔' : '✖'} ${kind} coverage — depth: ${r.depth ?? '?'}${r.label ? ` (${r.label})` : ''}, cases: ${r.total ?? 0}`);
-    for (const p of r.perAc ?? []) log(`   ${p.ac}: ${p.n}`);
+    for (const p of r.perAc ?? []) log(`   ${p.ac}: ${p.n}/${p.need}${p.risk ? ` (ризик ${p.risk})` : ""}`);
     if (r.categories?.length) log(`   categories: ${r.categories.join(', ')}`);
     if (r.widths) log(`   layout widths checked: ${r.widths.join(', ') || 'none'}`);
     for (const p of r.problems) log(`   ✖ ${p}`);
@@ -1711,7 +1746,7 @@ function cmdDoctor() {
   const home = path.join(os.homedir(), '.claude');
   const settings = readJson(path.join(home, 'settings.json'), {});
   JSON.stringify(settings.hooks ?? {}).includes('pipeline.mjs') ? ok('guard hook installed') : warn('guard hook not found in ~/.claude/settings.json — re-run install.sh');
-  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-scout', 'team-qa', 'team-qa-mobile', 'team-qa-ext']) {
+  for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-scout', 'team-designer', 'team-qa', 'team-qa-mobile', 'team-qa-ext']) {
     fs.existsSync(path.join(home, 'agents', `${a}.md`)) ? null : warn(`agent ${a} not installed in ~/.claude/agents`);
   }
   const root = findRoot(process.cwd());
@@ -1990,6 +2025,7 @@ async function cmdQaRun({ pos, flags }) {
     `- Run commands from the workspace root (your current directory). \`node ~/.claude/pipeline/pipeline.mjs\` is available.`,
     `- NEVER change application code, only files under .pipeline/${id}/ (and at most one optional regression test under the e2e folder).`,
     `- You have no browser tools of your own: use ONLY \`node ~/.claude/pipeline/pipeline.mjs eyes …\`, \`mail …\` and \`compare …\` to see and use the app. Evidence must be files made by these commands. The time limit is enforced by them.`,
+    `- Be lazy and smart: right after \`eyes start\` write .pipeline/${id}/eyes/plan.json (risk per AC, one representative per class of the test matrix, what you skip) and run \`node ~/.claude/pipeline/pipeline.mjs eyes plan --task ${id}\`. Format: playbook, section 0a. Do not test everything in a row; the footer of each command shows your action and screenshot budget.`,
     `- Do NOT run the \`stamp\` command and do not commit: the orchestrator does both after you finish.`,
     `- Write the report to .pipeline/${id}/${QA_FILE[kind]} (format: see the playbook, section 6) and run \`node ~/.claude/pipeline/pipeline.mjs eyes finish --task ${id}${kind === 'mobile' ? ' --kind mobile' : ''}\`. Your final message must be the short reply described at the end of the instructions.`,
     '',
@@ -2072,13 +2108,14 @@ async function mobilePrepare({ root, ws, id, platform, started }) {
   return { platform: plat, deviceId: r.deviceId, deviceName: r.device, appId: svc.mobile.appId[plat], service: svc.name };
 }
 /** Те, що потрібно eyes.mjs від рушія. */
-const eyesCtx = () => ({ die, log, loadWorkspace, which, startBackground, taskDepth, dependencyClosure, currentTaskId, mobilePrepare, CATEGORIES });
+const eyesCtx = () => ({ urlUp, stopAll, specAcs, die, log, loadWorkspace, which, startBackground, taskDepth, dependencyClosure, currentTaskId, mobilePrepare, CATEGORIES });
 const cmdEyes = async (a) => (await import('./eyes.mjs')).cmdEyes(eyesCtx(), a);
 const cmdMail = async (a) => (await import('./eyes.mjs')).cmdMail(eyesCtx(), a);
+const cmdDesignShot = async (a) => (await import('./eyes.mjs')).cmdDesignShot(eyesCtx(), a);
 const cmdCompare = async (a) => (await import('./eyes.mjs')).cmdCompare(eyesCtx(), a);
 
 function cmdTemplate({ pos }) {
-  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', layout: 'layout-checks.ts', 'testing-guide': 'testing-guide.md' };
+  const map = { workspace: 'workspace.example.json', spec: 'spec.md', playwright: 'playwright.config.ts', 'mobile-flow': 'maestro-flow.example.yaml', layout: 'layout-checks.ts', 'testing-guide': 'testing-guide.md', design: 'design.md' };
   const f = map[pos[0]] ?? die(`Usage: template <${Object.keys(map).join('|')}>`);
   process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'templates', f), 'utf8'));
 }
@@ -2117,7 +2154,9 @@ const HELP = `Claude Team Kit — ${PL} <command>
   qa-provider <web|mobile>       which provider tests this kind (claude | gemini | codex)
   qa-run <id> --kind web|mobile [--depth d] [--partial] [--note ".."]
                                  run the external tester, check coverage, stamp (exit 6 = external failed, 2 = coverage gaps)
-  playbook                       the tester's case catalogue (forms, fields, gestures, interruptions, network…)
+  playbook [design]              the tester's case catalogue (forms, fields, gestures, interruptions, network…); "playbook design" = the designer handbook
+  design-shot <file|url>         render a mockup (HTML) or the live app at several widths → PNGs + layout audit (for the designer)
+  mark <id> design=yes|no|done   task needs a designer (yes), does not (no), design delivered and checked (done)
   scaffold | doctor              set up / check the workspace
   template <workspace|spec|playwright|layout|mobile-flow|testing-guide>
   guard                          PreToolUse hook (reads JSON on stdin)
@@ -2132,10 +2171,10 @@ const COMMANDS = {
     process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'PIPELINE.md'), 'utf8').replaceAll('{{REPLY_LANGUAGE}}', `${lang.name} (${lang.native})`));
   },
   detect: cmdDetect, conventions: cmdConventions, current: cmdCurrent, add: cmdAdd, stamp: cmdStamp, coverage: cmdCoverage,
-  playbook: () => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
+  playbook: ({ pos }) => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, pos[0] === 'design' ? 'DESIGN_PLAYBOOK.md' : 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),

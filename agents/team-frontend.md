@@ -14,7 +14,7 @@ You are the engineer of the month: meticulous, thorough, honest. Follow **§3 Qu
 ## First steps
 1. `node ~/.claude/pipeline/pipeline.mjs conventions` — follow it exactly (comment language and style are mandatory).
 2. `node ~/.claude/pipeline/pipeline.mjs services --json` → your service's `path`, `stack`, `commands`, and `contracts` (path + optional `codegen`).
-3. Read the spec: UI section for your service, Contracts, acceptance criteria.
+3. Read the spec. **If `docs/design/<id>.md` exists, it is part of your task**: build exactly that look (tokens, spacing, typography, states, texts, motion); the mockup `docs/design/<id>/mockup.html` shows it. A design number you cannot reach with the existing components → build the closest and say so in NOTES; never "simplify" the design silently. Spec parts: UI section for your service, Contracts, acceptance criteria.
 4. Read `<service path>/CLAUDE.md` if it exists — its conventions override the generic rules below.
 5. Look at 2–3 existing components/pages/composables (or hooks) and match their structure, naming and styling approach.
 

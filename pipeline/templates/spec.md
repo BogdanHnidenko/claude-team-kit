@@ -4,6 +4,7 @@
 - **Services:** <users (backend), gateway (backend), web (frontend)>
 - **Infra changes:** yes | no
 - **QA:** e2e | api-only | skip (reason)
+- **Design:** none | docs/design/<id>.md (the designer's document; its V-n are copied into the acceptance criteria below)
 
 ## 1. Goal
 One or two sentences: who gets what, and why.
@@ -56,6 +57,17 @@ Fill this in whenever the task touches data that is shown in the app AND sent or
 | id | surface A | surface B | what must match |
 |---|---|---|---|
 | K-1 | e.g. quote screen in the app | e.g. the email sent to the client | totals, currency format, dates, line order, language |
+
+## 6b. Test matrix and risk (helps the tester NOT to test everything)
+Fill this in whenever the feature multiplies across languages, screens, roles, currencies, devices or document types. The tester takes one representative per class and expands only where a bug is found.
+- **Risk per AC:** high (new logic, money, data) / medium / low (copy or style only): one line each if not obvious.
+| dimension | class (similar behaviour) | members | why they differ from other classes |
+|---|---|---|---|
+| language | long-latin | de, fr, es, it | long words: text gets cut first |
+| language | cyrillic | uk | different script and diacritics, font fallback |
+| screen | editor / preview / PDF | … | … |
+- **Already covered by automated tests:** …
+No multiplication → write `none`.
 
 ## 7. Decisions (questions answered by the user)
 Every question an agent asked and the user's answer — agents read this before asking again.

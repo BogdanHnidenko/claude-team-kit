@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Папка з цим файлом (там лежать eyes-web.mjs і layout-audit.mjs). */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -18,10 +18,27 @@ export const WIDTH_SETS = {
   deep: [320, 375, 414, 768, 1024, 1280, 1536],
   exhaustive: [320, 360, 375, 390, 414, 480, 600, 768, 834, 1024, 1280, 1440, 1920],
 };
+/** М'які ліміти дій і скріншотів за глибиною: перевищення дає попередження, а не помилку (сигнал, що тестувальник блукає). */
+export const SOFT_LIMITS = { smoke: { actions: 40, shots: 10 }, deep: { actions: 90, shots: 24 }, exhaustive: { actions: 180, shots: 60 } };
 const WEB_CMDS = new Set(['goto', 'back', 'reload', 'click', 'dblclick', 'hover', 'fill', 'type', 'press', 'select', 'check', 'uncheck', 'upload', 'scroll', 'wait', 'resize', 'net', 'scheme', 'clear', 'eval', 'text', 'look', 'sweep']);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Хвилини, що залишились до дедлайну (від'ємне = час вийшов). */
 const minutesLeft = (session) => (new Date(session.deadline).getTime() - Date.now()) / 60000;
+
+/** Остання лінія кожної команди: час, лічильники дій і скріншотів проти м'яких лімітів. Підштовхує не перевіряти все підряд. */
+function footer(P, session, left) {
+  const rows = readJournal(P);
+  const actions = rows.filter((r) => r.cmd && r.cmd !== 'error' && r.cmd !== 'plan').length;
+  const shots = rows.filter((r) => r.shot).length;
+  const lim = SOFT_LIMITS[session.depth] ?? SOFT_LIMITS.deep;
+  const hasPlan = rows.some((r) => r.cmd === 'plan');
+  const warn = [];
+  if (!hasPlan && actions >= 3) warn.push('⚠ плану немає: спершу `pl eyes plan` (ризики й вибірка), потім дії');
+  if (actions > lim.actions) warn.push(`⚠ дій ${actions} > ${lim.actions}: ти блукаєш. Закінчуй чартер, не перевіряй вдруге те, що пройшло`);
+  else if (actions > lim.actions * 0.8) warn.push(`ℹ використано понад 80% дій (${actions}/${lim.actions}): лишай час на звіт`);
+  if (shots > lim.shots) warn.push(`⚠ скріншотів ${shots} > ${lim.shots}: це найдорожче. Читай текст (\`text\`, \`look\` без відкриття знімка) і відкривай знімок лише коли треба оцінити вигляд`);
+  return [`⏱ залишилось ${Math.max(0, left).toFixed(1)} хв · дій ${actions}/${lim.actions} · скріншотів ${shots}/${lim.shots}`, ...warn].join('\n');
+}
 
 /** Шляхи сесії тестування завдання. */
 function paths(root, id) {
@@ -85,6 +102,7 @@ export async function cmdEyes(ctx, { pos, flags }) {
   if (sub === 'start') return start(ctx, { root, ws, id, P, kind: rest[0], flags });
   if (sub === 'stop') return stop(ctx, { root, id, P });
   if (sub === 'finish') return finish(ctx, { root, ws, id, P, kind: flags.kind });
+  if (sub === 'plan') return plan(ctx, { root, id, P });
   if (sub === 'status') { const s = readJson(P.session, null); return log(s ? `${s.kind} сесія, залишилось ${Math.max(0, minutesLeft(s)).toFixed(1)} хв` : 'сесії немає'); }
   const session = readJson(P.session, null) ?? die(`Сесію не запущено: pl eyes start <web|mobile> --task ${id}`);
   if (session.ended) die('Сесію завершено. Нова: pl eyes start …');
@@ -184,7 +202,7 @@ async function webCommand(ctx, { P, session, sub, rest, flags, id }) {
   if (!WEB_CMDS.has(sub)) die(`Невідома команда "${sub}". Веб: ${[...WEB_CMDS].join(', ')}`);
   const res = await daemon(P, { cmd: sub, ...webArgs(sub, rest, flags, session) }).catch((e) => ({ ok: false, error: e.message }));
   const left = minutesLeft(session);
-  if (!res.ok) { log(`✖ ${res.error}`); log(`⏱ залишилось ${Math.max(0, left).toFixed(1)} хв`); process.exit(res.timeUp ? 4 : 1); }
+  if (!res.ok) { log(`✖ ${res.error}`); log(footer(P, session, left)); process.exit(res.timeUp ? 4 : 1); }
   if (sub === 'look') {
     log(`📷 ${show(id, res.shot)}   ${res.url}   «${res.title}»   ${res.viewport.width}×${res.viewport.height}   scroll ${res.scroll.y}/${res.scroll.h}`);
     for (const it of res.items) log(`  ${it.tag}${it.tid ? ` [${it.tid}]` : ''}${it.type ? ` (${it.type})` : ''}: ${it.text ?? it.label ?? ''}${it.value ? ` = "${it.value}"` : ''}${it.disabled ? ' (disabled)' : ''}${it.invalid ? ' (invalid)' : ''}`);
@@ -203,7 +221,7 @@ async function webCommand(ctx, { P, session, sub, rest, flags, id }) {
     log(`✔ текст (${res.text.length} символів) збережено: ${show(id, path.relative(P.task, file))}\n${res.text.slice(0, 300)}${res.text.length > 300 ? '…' : ''}`);
   } else if (sub === 'eval') log(JSON.stringify(res.result));
   else log(`✔ ${sub}${res.note ? ` — ${res.note}` : ''}`);
-  log(`⏱ залишилось ${Math.max(0, left).toFixed(1)} хв`);
+  log(footer(P, session, left));
 }
 
 // -------------------------------------------------------------- мобільне
@@ -290,7 +308,112 @@ async function mobileCommand(ctx, { P, session, sub, rest, flags, id }) {
     }
     default: die(`Невідома мобільна команда "${sub}". Є: look, tap, longpress, type, swipe, scroll, scrollto, back, hidekeyboard, launch [--clear], kill, background, foreground, scheme dark|light, font large|normal, net offline|online (Android), backend stop|start, flow '<yaml>', text`);
   }
-  log(`⏱ залишилось ${Math.max(0, left).toFixed(1)} хв`);
+  log(footer(P, session, left));
+}
+
+// ------------------------------------------------------------ скріншоти для дизайнера
+/**
+ * pl design-shot <файл.html | url> [--widths 390,1280] [--name n] [--scheme dark] [--service web] [--viewport-only] [--task id]
+ * Рендерить макет (HTML-файл) або живий застосунок у Chromium на заданих ширинах, робить скріншоти й запускає аудит верстки.
+ * Для дизайнера (не тестувальника): нічого не пише в журнал eyes, докази для тестів не створює.
+ * Скріншоти: .pipeline/<id>/design-shots/<name>-<ширина>.png (відкривати інструментом читання).
+ */
+export async function cmdDesignShot(ctx, { pos, flags }) {
+  const { die, log, loadWorkspace } = ctx;
+  const target = pos[0] ?? die('Usage: design-shot <файл.html | url> [--widths 390,1280] [--name n] [--scheme dark|light] [--service <web>] [--viewport-only] [--task <id>]');
+  const { root, ws } = loadWorkspace();
+  const id = flags.task ?? ctx.currentTaskId(root) ?? die('Не знайшов задачу: додай --task <id>');
+  const pw = resolvePlaywright(root, ws) ?? die('Не знайшов Playwright. Один раз: cd e2e && npm init -y && npm i -D @playwright/test && npx playwright install chromium');
+  const isUrl = /^https?:\/\//i.test(target);
+  const outDir = path.join(root, '.pipeline', id, 'design-shots');
+  fs.mkdirSync(outDir, { recursive: true });
+  let url = target;
+  if (!isUrl) {
+    const file = path.resolve(root, target);
+    if (!fs.existsSync(file)) die(`Файла немає: ${target}`);
+    url = `file://${file}`;
+  }
+  const widths = String(flags.widths ?? (isUrl ? '375,1280' : '390,1280')).split(',').map(Number).filter((n) => n >= 280 && n <= 2560).slice(0, 5);
+  if (!widths.length) die('--widths: список чисел від 280 до 2560, не більше 5');
+  const name = String(flags.name ?? (isUrl ? 'current' : path.basename(target).replace(/\.[^.]+$/, ''))).replace(/[^\w.-]+/g, '-');
+  const started = [];
+  try {
+    if (isUrl && !(await ctx.urlUp(url)) && flags.service) {
+      for (const sv of webServices(ctx, ws)) await ctx.startBackground(sv.name, sv.dev.start, path.resolve(root, sv.path), sv.dev.url, outDir, {}, started);
+    }
+    if (isUrl && !(await ctx.urlUp(url))) die(`Застосунок не відповідає на ${url}. Додай --service <назва фронтенду> (запущу й зупиню сам) або запусти його.`);
+    const { chromium } = await import(pathToFileURL(createRequire(import.meta.url).resolve(pw)).href).then((m) => m.default ?? m);
+    const { auditInPage } = await import(pathToFileURL(path.join(HERE, 'layout-audit.mjs')).href);
+    const browser = await chromium.launch({ headless: true });
+    try {
+      for (const w of widths) {
+        const context = await browser.newContext({ viewport: { width: w, height: Number(flags.height ?? 800) }, colorScheme: flags.scheme === 'dark' ? 'dark' : 'light', ignoreHTTPSErrors: true });
+        const page = await context.newPage();
+        const errs = [];
+        page.on('pageerror', (e) => errs.push(String(e.message).slice(0, 160)));
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => page.goto(url, { waitUntil: 'load', timeout: 30000 }));
+        await page.waitForTimeout(Number(flags.wait ?? 400));
+        const issues = await page.evaluate(auditInPage, []).catch(() => []);
+        const file = path.join(outDir, `${name}-${w}${flags.scheme === 'dark' ? '-dark' : ''}.png`);
+        await page.screenshot({ path: file, fullPage: !flags['viewport-only'] });
+        const bad = issues.filter((i) => i.severity === 'error');
+        log(`📷 ${show(id, path.relative(path.join(root, '.pipeline', id), file))}  ${w}px  ${bad.length ? `✖ ${bad.length} проблем верстки` : '✔ верстка без помилок'}${issues.length > bad.length ? `, ${issues.length - bad.length} попереджень` : ''}`);
+        for (const i of bad.slice(0, 5)) log(`     • ${i.kind} ${i.selector}: ${i.detail}`);
+        if (errs.length) log(`     ⚠ помилки сторінки: ${errs.slice(0, 2).join(' | ')}`);
+        await context.close();
+      }
+    } finally { await browser.close(); }
+  } finally { if (started.length) ctx.stopAll(started); }
+  log('Відкрий скріншоти інструментом читання й оціни вигляд очима. Макет: HTML-файл поруч із дизайном, не артефакт.');
+}
+
+// --------------------------------------------------------------- план (ризики й вибірка)
+/**
+ * Перевіряє plan.json тестувальника: ризик кожного критерію, матриця класів еквівалентності з вибіркою, що свідомо пропущено.
+ * Формат: { risks:[{ac,risk:high|medium|low,why}], matrix:[{dimension,classes:[{name,members:[..],pick:[..],why}]}], skip:[{what,why}] }
+ * Повертає { problems, plan }.
+ */
+export function validatePlan(plan, acs = []) {
+  const problems = [];
+  if (!plan || typeof plan !== 'object') return { problems: ['plan.json не знайдено або не JSON'], plan: null };
+  const longEnough = (x) => typeof x === 'string' && x.trim().length >= 10;
+  if (!Array.isArray(plan.risks) || !plan.risks.length) problems.push('plan.risks[] порожній: для кожного AC вкажи ризик (high|medium|low) і чому');
+  for (const r of plan.risks ?? []) {
+    if (!['high', 'medium', 'low'].includes(r.risk)) problems.push(`risk ${r.ac ?? '?'}: risk має бути high|medium|low`);
+    if (!longEnough(r.why)) problems.push(`risk ${r.ac ?? '?'}: поясни why (щонайменше 10 символів)`);
+  }
+  const planned = new Set((plan.risks ?? []).map((r) => r.ac));
+  for (const ac of acs) if (!planned.has(ac)) problems.push(`${ac} немає в plan.risks`);
+  for (const d of plan.matrix ?? []) {
+    if (!d.dimension || !Array.isArray(d.classes) || !d.classes.length) { problems.push(`matrix: dimension "${d.dimension ?? '?'}" без classes[]`); continue; }
+    for (const c of d.classes) {
+      const label = `matrix ${d.dimension}/${c.name ?? '?'}`;
+      if (!c.name || !Array.isArray(c.members) || !c.members.length) problems.push(`${label}: потрібні name і members[]`);
+      else if (!Array.isArray(c.pick) || !c.pick.length || c.pick.some((m) => !c.members.includes(m))) problems.push(`${label}: pick[] має бути непорожньою підмножиною members`);
+      else if (c.pick.length > Math.max(1, Math.ceil(c.members.length / 3))) problems.push(`${label}: pick занадто великий (${c.pick.length} з ${c.members.length}) — бери по одному представнику класу, решту розширюй лише після падіння`);
+      if (!longEnough(c.why)) problems.push(`${label}: поясни why, чим цей клас відрізняється`);
+    }
+  }
+  for (const k of plan.skip ?? []) if (!k.what || !longEnough(k.why)) problems.push('skip: потрібні what і why (щонайменше 10 символів)');
+  return { problems, plan };
+}
+/** Читає .pipeline/<id>/eyes/plan.json (null, якщо немає). */
+export const readPlan = (root, id) => readJson(path.join(paths(root, id).dir, 'plan.json'), null);
+
+/** pl eyes plan: перевіряє план і записує його в журнал. Без валідного плану покриття (coverage) не пройде. */
+function plan(ctx, { root, id, P }) {
+  const { log, specAcs } = ctx;
+  const file = path.join(P.dir, 'plan.json');
+  const { problems, plan: pl } = validatePlan(readJson(file, null), specAcs ? specAcs(root, id) : []);
+  if (problems.length) {
+    log(`✖ план не пройшов перевірку (${path.relative(root, file)}):\n  - ${problems.slice(0, 15).join('\n  - ')}`);
+    log('Формат і приклад: pl playbook (розділ «Тріаж»). Пиши план коротко: 2 хвилини, не більше.');
+    process.exit(1);
+  }
+  addJournal(P, { cmd: 'plan', risks: pl.risks.length, classes: (pl.matrix ?? []).reduce((n, d) => n + d.classes.length, 0) });
+  const picks = (pl.matrix ?? []).flatMap((d) => d.classes.map((c) => `${d.dimension}/${c.name} → ${c.pick.join(', ')}`));
+  log(`✔ план прийнято: ${pl.risks.length} ризиків${picks.length ? `, вибірка:\n  ${picks.join('\n  ')}` : ''}${pl.skip?.length ? `\n  свідомо пропущено: ${pl.skip.map((k) => k.what).join('; ')}` : ''}`);
+  if (picks.length) log('У звіті познач кожну перевірку з матриці полем "class": "<dimension>/<class>". Якщо клас упав, розшир його (ще ≥1 представник з того ж класу).');
 }
 
 // --------------------------------------------------- перевірка звіту (finish)

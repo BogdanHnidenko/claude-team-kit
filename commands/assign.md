@@ -1,5 +1,5 @@
 ---
-description: Give a direct instruction to one team agent - backend, web, mobile, qa, qa-mobile, reviewer (претестер) or infra
+description: Give a direct instruction to one team agent - designer, backend, web, mobile, qa, qa-mobile, reviewer (претестер) or infra
 argument-hint: <роль> [сервіс] <що зробити>
 ---
 
@@ -10,6 +10,7 @@ Examples of what I may write:
 - `backend додай пагінацію в GET /quotes`
 - `mobile виправ відступи на екрані Profile на iPhone SE`
 - `qa-mobile протестуй тільки логін на Android`
+- `дизайнер переробити вигляд картки кошторису, щоб було сучасніше`
 - `претестер перевір авторизацію, focus: IDOR`
 - `інфра додай healthcheck у docker-compose` (виконує бекенд-агент у режимі infra)
 Pass my instruction to the agent as I wrote it (plus task id and spec path). Report the agent's result, and tell me which checks are now stale before `/commit`.

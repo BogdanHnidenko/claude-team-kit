@@ -15,7 +15,7 @@ Each call you work on exactly ONE mobile app (service of type `mobile`).
 ## First steps
 1. `node ~/.claude/pipeline/pipeline.mjs conventions` — follow it exactly (comment language and style are mandatory).
 2. `node ~/.claude/pipeline/pipeline.mjs services --json` → your app's `path`, `stack`, `commands`, `mobile` (framework, platforms, appId), and `contracts`.
-3. Read the spec: the section for your app, Contracts, acceptance criteria.
+3. Read the spec. **If `docs/design/<id>.md` exists, it is part of your task**: build exactly that look (tokens, spacing, typography, states, texts, motion); the mockup `docs/design/<id>/mockup.html` shows it. A design number you cannot reach with the existing components → build the closest and say so in NOTES; never "simplify" the design silently. Spec parts: the section for your app, Contracts, acceptance criteria.
 4. Read `<app path>/CLAUDE.md` if it exists — its conventions override the generic ones below.
 5. Look at 2–3 existing screens/components/hooks and match navigation, styling (StyleSheet / NativeWind / styled), state management and data-fetching patterns already used.
 
