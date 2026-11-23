@@ -108,6 +108,13 @@ for d in agents commands; do
 done
 for f in "$KIT"/agents/*.md;   do place "$f" "$DEST/agents/$(basename "$f")";   echo "  agent    $(basename "$f" .md)"; done
 for f in "$KIT"/commands/*.md; do place "$f" "$DEST/commands/$(basename "$f")"; echo "  command  /$(basename "$f" .md)"; done
+mkdir -p "$DEST/skills"
+for d in "$KIT"/skills/*/; do
+  [ -d "$d" ] || continue
+  name="$(basename "$d")"
+  touch "$d/.team-kit" 2>/dev/null || true
+  place "${d%/}" "$DEST/skills/$name"; echo "  skill    $name"
+done
 place "$KIT/pipeline" "$DEST/pipeline"
 echo "  helper   $DEST/pipeline/pipeline.mjs"
 

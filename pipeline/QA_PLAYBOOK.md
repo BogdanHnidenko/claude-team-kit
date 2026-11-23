@@ -75,10 +75,17 @@ Command cheat-sheet (`pl` = `node ~/.claude/pipeline/pipeline.mjs`; all take `--
 | `scroll 400\|top\|bottom` · `wait [target] [ms]` | `swipe up\|down\|left\|right` · `scroll` · `scrollto <target>` · `back` |
 | `resize <w> [h]` · **`sweep <name>`** (all widths of the depth + automatic layout audit) | `scheme dark\|light` · `font large\|normal` |
 | `net offline\|online\|slow:3000` · `scheme dark\|light` · `clear` (cookies/storage) | `net offline\|online` (Android) · `backend stop\|start` (works on both) |
-| `text [target] --out name` (visible text → file) · `eval "<js>"` | `text --out name` · `flow '<maestro yaml>'` (anything else) |
+| `text [target] --out name` (visible text → file) · `eval "<js>"` · `eval --file <path>` | `text --out name` · `flow '<maestro yaml>'` · `flow --file <path>` (anything else) |
 
 Targets: web `testid:send`, `text:Save`, `role:button:Save`, `label:Email`, `placeholder:…`, `css:…`, or just the word (tries testid → button → link → label → text). Mobile `id:send` (testID), `text:Save`, `point:50%,80%`, or the word. Use the spec's testIDs first, then what `look` shows.
 Errors do not stop you: a failed click is information (the element is missing or covered), record it.
+
+### Shell rules (mandatory for every tester, critical on Gemini/ChatGPT)
+External CLIs run a command monitor that **rejects** any command with unquoted shell operators, even if the program itself is allowed. In headless mode there is nobody to approve, so the run just fails.
+- **One simple command per call.** No `|`, `&&`, `||`, `;`, `>`, `>>`, `<`, `$(…)`, backticks, `&`. No `cd dir && …` (you start in the workspace root), no shell variables.
+- Save output with the command's own flag (`pl eyes text --out name`, `pl eyes look name`); write files with your file tool, not `echo … > file`; read with `cat <file>` alone.
+- JavaScript for `eval` and Maestro YAML for `flow`: write it to `.pipeline/<id>/eyes/<name>.js|yaml`, then `pl eyes eval --file <path>` / `pl eyes flow --file <path>`. Never inline code with quotes, `;` or `|`.
+- Rejected? Don't rephrase the same chain: split it into simple commands.
 
 ## 3. What to try (go through the sections that fit this task)
 

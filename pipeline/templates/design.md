@@ -39,5 +39,11 @@ Concrete, checkable facts for the tester (looks at screenshots and measures). Nu
 - V-1: The primary button on <screen> is 48 px high, radius 12 px, background #2563EB, white label 16/24 semibold.
 - V-2: …
 
+## iPhone Duo (only when the project has `DUO: on`; otherwise delete this section)
+- **Rail map:** screen → control → icon (SF Symbol) → slot (top|bottom) → native | custom → shown on which screens.
+- **Rail motion:** standard from the skill (220 ms in / 160 ms out, simultaneous swap, fixed slots) or each deviation with a reason.
+- **Fold-safe zones:** what sits in the bottom half when folded in portrait; nothing interactive in the curve.
+- **Edge cases:** Split View (rail on the left), RTL, Dynamic Island, Reduce Motion, large text.
+
 ## Open points
 Decisions you made without asking (ASSUMPTIONS), new dependencies or fonts (NEW_DEPENDENCY), anything the developer must ask the orchestrator about.

@@ -1,5 +1,8 @@
 {
   "name": "my-app",
+  "targets": {
+    "iphoneDuo": false
+  },
   "services": [
     {
       "name": "web",

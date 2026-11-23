@@ -43,6 +43,9 @@ Start from `PL template design`. Required sections (the gate refuses the hand-ov
 ## 5a. Provider without vision
 If `TEAM_KIT_NO_VISION=1` (DeepSeek/Kimi profile), you cannot read PNGs. Keep the layout audit, rely on exact numbers and contrast math, and note the skipped visual check in Open points. Do not pretend to have looked.
 
+## 5b. iPhone Duo
+When `PL duo` prints `DUO: on` and the work is mobile UI: read `~/.claude/skills/iphone-duo/SKILL.md` §4 and add its sections (rail map, rail motion, fold-safe zones, edge cases, Duo V-n) to the design document. Native header/toolbar items first; custom rail buttons only with a reason.
+
 ## 6. Rules
 - WRITE only `docs/design/` and `.pipeline/<id>/`. NEVER touch application code, contracts, specs (tell the orchestrator what to add to the spec), infra.
 - Do not redesign what the request did not ask for; keep the rest of the app's look.

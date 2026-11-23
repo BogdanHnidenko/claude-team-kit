@@ -33,7 +33,7 @@ const AUDIT_EXCLUDES = [
 
 // Read-only / low-risk subcommands that can run without a permission prompt.
 // start, commit, rollback and deploy change state, so the user approves them.
-const SAFE_ALLOW = ['model', 'resume-info', 'eyes', 'mail', 'compare', 'design-shot', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
+const SAFE_ALLOW = ['duo', 'model', 'resume-info', 'eyes', 'mail', 'compare', 'design-shot', 'rules', 'detect', 'current', 'stamp', 'coverage', 'playbook', 'conventions', 'services', 'owner', 'status', 'diff', 'verify', 'comments', 'sim', 'screen', 'mark', 'template', 'doctor', 'qa-provider', 'qa-run']
   .map((c) => `Bash(${PL} ${c}:*)`);
 
 // ---------------------------------------------------------------- utils
@@ -720,6 +720,88 @@ function cmdResumeInfo({ pos }) {
   if (dirty && (t.stage ?? 0) <= 2) log('→ BUILD was interrupted: pass the listed files to the developer as context ("check the unfinished changes and finish them per the spec"); do not start from scratch and do not overwrite silently.');
   else if (dirty) log('→ code changed after earlier stages: re-run the stale gates (diff → review → QA → verify) before /commit.');
   else log('→ nothing uncommitted: continue from the first stage whose gate has not passed.');
+}
+
+// ------------------------------------------------------------ iPhone Duo (складаний iPhone)
+/** Базові нативні пакети для Duo: хінж, безпечні зони, смуга статусу/панель, анімації панелі керування. */
+const DUO_BASE = ['expo-hinge', 'react-native-safe-area-context', 'expo-status-bar', 'react-native-reanimated', 'react-native-worklets'];
+/** Необовʼязкові пакети (за потреби задачі): точна геометрія згину/камери та двопанельні екрани SwiftUI. */
+const DUO_OPTIONAL = ['react-native-reserved-regions', '@expo/ui'];
+const DUO_SKILL = path.join(os.homedir(), '.claude', 'skills', 'iphone-duo', 'SKILL.md');
+/** Чи ввімкнено режим Duo в маніфесті (workspace.json: targets.iphoneDuo). */
+const duoOn = (ws) => ws?.targets?.iphoneDuo === true;
+/** Мажорна версія з рядка semver на кшталт "~58.0.2" або "^58"; null, якщо не розпізнано. */
+const majorOf = (v) => { const m = /(\d+)(?:\.\d+)*/.exec(String(v ?? '')); return m ? Number(m[1]) : null; };
+
+/** Збирає стан готовності кожного мобільного сервісу: версія Expo SDK, наявні й відсутні пакети. */
+function duoInspect(root, ws) {
+  return ws.services.filter((s) => s.type === 'mobile').map((s) => {
+    const dir = path.resolve(root, s.path);
+    const pkg = readJson(path.join(dir, 'package.json'), null);
+    const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
+    const expo = deps.expo ? majorOf(deps.expo) : null;
+    return {
+      name: s.name, path: s.path, hasPackage: Boolean(pkg), expoSdk: expo, router: Boolean(deps['expo-router']),
+      present: DUO_BASE.filter((d) => deps[d]), missing: DUO_BASE.filter((d) => !deps[d]),
+      optionalPresent: DUO_OPTIONAL.filter((d) => deps[d]), optionalMissing: DUO_OPTIONAL.filter((d) => !deps[d]),
+    };
+  });
+}
+/** Версія Xcode (macOS) і наявність симулятора iPhone Duo; поза macOS повертає null-значення. */
+function duoToolchain() {
+  if (process.platform !== 'darwin') return { xcode: null, simulator: null };
+  const v = run('xcodebuild', ['-version'], process.cwd(), { allowFail: true });
+  const m = /Xcode\s+(\d+(?:\.\d+)*)/.exec(v.stdout ?? '');
+  const sims = run('xcrun', ['simctl', 'list', 'devices', 'available'], process.cwd(), { allowFail: true });
+  return { xcode: m ? m[1] : null, simulator: /iPhone Duo/i.test(sims.stdout ?? '') };
+}
+/** Xcode ≥ 27.1: порівняння версій «мажор.мінор». */
+const xcodeOk = (v) => { if (!v) return false; const [a, b = 0] = v.split('.').map(Number); return a > 27 || (a === 27 && b >= 1); };
+
+/** pl duo | pl duo on|off | pl duo setup [--service s] [--all] [--dry]: готовність до iPhone Duo, вмикання режиму й встановлення пакетів. */
+function cmdDuo({ pos, flags }) {
+  const { root, ws } = loadWorkspace();
+  const sub = pos[0];
+  const manifest = path.join(root, MANIFEST_REL);
+  const setFlag = (on) => { const cur = readJson(manifest); cur.targets = { ...(cur.targets ?? {}), iphoneDuo: on }; writeJson(manifest, cur); };
+
+  if (sub === 'on' || sub === 'off') { setFlag(sub === 'on'); return log(`✔ DUO: ${sub}${sub === 'on' ? `. Скіл для дизайнера й розробників: ${DUO_SKILL}` : ''}`); }
+
+  const services = duoInspect(root, ws);
+  if (sub === 'setup') {
+    const list = flags.service ? services.filter((x) => x.name === flags.service) : services;
+    if (!list.length) die('Немає мобільного сервісу для налаштування (додай --service <назва>)');
+    for (const x of list) {
+      if (!x.hasPackage) { log(`⚠ ${x.name}: немає package.json в ${x.path}, пропускаю`); continue; }
+      if (x.expoSdk === null) { log(`⚠ ${x.name}: не Expo-проєкт (немає залежності expo). expo-hinge працює лише з Expo-модулями: спершу підключи expo (npx install-expo-modules), потім повтори. Пропускаю.`); continue; }
+      if (x.expoSdk < 58) die(`${x.name}: Expo SDK ${x.expoSdk} < 58. iPhone Duo підтримує SDK 58 і Xcode 27.1. Оновлення SDK я автоматично не роблю: npx expo install expo@^58 --fix, потім повтори \`duo setup\`.`);
+      const want = [...x.missing, ...(flags.all ? x.optionalMissing : [])];
+      if (!want.length) { log(`✔ ${x.name}: усі пакети вже встановлені`); continue; }
+      const cmd = ['expo', 'install', ...want];
+      log(`${x.name}: npx ${cmd.join(' ')}   (у ${x.path})`);
+      if (flags.dry) continue;
+      const r = spawnSync('npx', cmd, { cwd: path.resolve(root, x.path), stdio: 'inherit', shell: process.platform === 'win32' });
+      if (r.status !== 0) die(`${x.name}: встановлення завершилось з помилкою (код ${r.status}). Нічого не міняю далі.`, 2);
+      log(`✔ ${x.name}: встановлено ${want.join(', ')}`);
+    }
+    if (!flags.dry) setFlag(true);
+    return log(`${flags.dry ? '(сухий прогін) ' : ''}Це нативні модулі: потрібна НОВА нативна збірка (dev client / expo run:ios / EAS). Розробник її не запускає: запиши в NOTES «needs new native build», оркестратор скаже користувачу.`);
+  }
+
+  const tool = duoToolchain();
+  const state = { duo: duoOn(ws), skill: fs.existsSync(DUO_SKILL), xcode: tool.xcode, xcodeOk: xcodeOk(tool.xcode), simulator: tool.simulator, services };
+  if (flags.json) return log(JSON.stringify(state, null, 2));
+  const looksReady = services.some((x) => x.present.includes('expo-hinge')) || (state.xcodeOk && state.simulator);
+  log(state.duo ? 'DUO: on' : `DUO: off${looksReady ? '  (проєкт схожий на готовий до Duo: pl duo on)' : ''}`);
+  if (!state.duo) return;
+  log(state.skill ? `skill: ${DUO_SKILL}  ← прочитай його, якщо задача торкається мобільного UI` : '⚠ скіл не встановлено: запусти install.sh з кита (папка skills/iphone-duo)');
+  log(`Xcode: ${tool.xcode ?? 'не знайдено (не macOS?)'}${tool.xcode ? (state.xcodeOk ? ' ✔ ≥ 27.1' : ' ✖ потрібен ≥ 27.1') : ''}  ·  симулятор iPhone Duo: ${tool.simulator === null ? '—' : tool.simulator ? 'є ✔' : 'немає ✖ (Xcode 27.1 → Device Hub)'}`);
+  for (const x of services) {
+    const sdk = x.expoSdk === null ? 'не Expo' : x.expoSdk >= 58 ? `Expo SDK ${x.expoSdk} ✔` : `Expo SDK ${x.expoSdk} ✖ (потрібен ≥ 58)`;
+    log(`${x.name}: ${sdk}${x.router ? ' · expo-router ✔' : ' · expo-router немає (системна панель керування працює через Expo Router)'}`);
+    log(x.missing.length ? `   NOT READY: не вистачає ${x.missing.join(', ')} → pl duo setup --service ${x.name}` : '   READY: базові пакети на місці');
+    if (x.optionalMissing.length) log(`   за потреби: ${x.optionalMissing.join(', ')} (pl duo setup --all)`);
+  }
 }
 
 function agentFor(type) {
@@ -1820,6 +1902,7 @@ function cmdDoctor() {
   const home = path.join(os.homedir(), '.claude');
   const settings = readJson(path.join(home, 'settings.json'), {});
   JSON.stringify(settings.hooks ?? {}).includes('pipeline.mjs') ? ok('guard hook installed') : warn('guard hook not found in ~/.claude/settings.json — re-run install.sh');
+  if (duoOn(ws)) ok(`iPhone Duo: on (skill ${fs.existsSync(DUO_SKILL) ? 'installed' : 'MISSING: run install.sh'}; details: ${PL} duo)`);
   ok(`provider: ${activeProvider()}${noVision() ? ' (no vision: QA with screenshots goes through team-qa-ext)' : ''}`);
   for (const a of ['team-backend', 'team-frontend', 'team-mobile', 'team-reviewer', 'team-scout', 'team-designer', 'team-qa', 'team-qa-mobile', 'team-qa-ext']) {
     fs.existsSync(path.join(home, 'agents', `${a}.md`)) ? null : warn(`agent ${a} not installed in ~/.claude/agents`);
@@ -1878,7 +1961,7 @@ const QA_PROVIDERS = {
 /** Глобальні налаштування Antigravity CLI: тут лежать дозволи для безголового режиму. */
 const AGY_SETTINGS = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
 /** Дозволи, потрібні тестувальнику (без коментарів у кінці рядка: agy тоді ігнорує правило мовчки). */
-const AGY_ALLOW_BASE = ['command(ls)', 'command(cat)', 'command(grep)', 'command(head)', 'command(tail)', 'command(mkdir)', 'command(pwd)', 'command(echo)', 'command(node)', 'command(npm)', 'command(npx)', 'command(lsof)', 'command(ps)', 'command(pgrep)', 'command(sed)', 'command(find)', 'command(wc)', 'command(date)', 'command(sleep)', 'command(curl)'];
+const AGY_ALLOW_BASE = ['command(ls)', 'command(cat)', 'command(grep)', 'command(head)', 'command(tail)', 'command(mkdir)', 'command(pwd)', 'command(echo)', 'command(node)', 'command(npm)', 'command(npx)'];
 const AGY_ALLOW_MOBILE = ['command(maestro)', 'command(xcrun)', 'command(adb)'];
 const AGY_DENY = ['command(rm -rf)', 'command(git push)'];
 const QA_FILE = { web: 'qa.json', mobile: 'qa-mobile.json' };
@@ -2108,10 +2191,8 @@ async function cmdQaRun({ pos, flags }) {
     `- NEVER change application code, only files under .pipeline/${id}/ (and at most one optional regression test under the e2e folder).`,
     `- You have no browser tools of your own: use ONLY \`node ~/.claude/pipeline/pipeline.mjs eyes …\`, \`mail …\` and \`compare …\` to see and use the app. Evidence must be files made by these commands. The time limit is enforced by them.`,
     `- Be lazy and smart: right after \`eyes start\` write .pipeline/${id}/eyes/plan.json (risk per AC, one representative per class of the test matrix, what you skip) and run \`node ~/.claude/pipeline/pipeline.mjs eyes plan --task ${id}\`. Format: playbook, section 0a. Do not test everything in a row; the footer of each command shows your action and screenshot budget.`,
+    `- SHELL RULES (your command monitor auto-rejects anything else): run ONE simple command per call. Never use \`|\`, \`&&\`, \`||\`, \`;\`, \`>\`, \`>>\`, \`<\`, \`$(...)\`, backticks or \`&\`; no \`cd x && ...\` (you already are in the workspace root), no shell variables. To save output use the command's own flag (\`eyes text --out name\`), to write a file use your file tool, to read a file use \`cat <file>\` alone. JavaScript for \`eyes eval\` and Maestro YAML for \`eyes flow\` go into a file under .pipeline/${id}/eyes/ and are run as \`eyes eval --file <path>\` / \`eyes flow --file <path>\`. If a command was rejected, do not retry it in another disguise: split it into simple ones.`,
     `- Do NOT run the \`stamp\` command and do not commit: the orchestrator does both after you finish.`,
-    `- SHELL RULES (your CLI runs in print mode: a command that needs confirmation is auto-denied and the WHOLE session is cancelled, so no report is written): run ONE simple command per call, with no pipes, no ';', no '&&', no '||', no redirects, no subshells, and only commands you already use for the job (ls, cat, grep, head, tail, node, npx, xcrun, lsof, ps, pgrep, curl). Never build, install or reinstall the app yourself (no expo/xcodebuild/pod, no 'npm run <script>' other than what the playbook names) and never edit package.json or any application file.`,
-    `- If the app does not start or shows a red error screen (for example 'No script URL provided'), do NOT investigate with your own commands: make one screenshot with \`eyes look\`, write the report with \`"verdict":"FAIL"\` and \`"reason":"ENV"\`, run \`eyes finish\`, and stop. An unfinished session without a report is the worst outcome.`,
-    `- Do not end your turn while an \`eyes\` command is still running in the background: wait for it, then continue. Finish only after the report is written and \`eyes finish\` has accepted it.`,
     `- Write the report to .pipeline/${id}/${QA_FILE[kind]} (format: see the playbook, section 6) and run \`node ~/.claude/pipeline/pipeline.mjs eyes finish --task ${id}${kind === 'mobile' ? ' --kind mobile' : ''}\`. Your final message must be the short reply described at the end of the instructions.`,
     '',
     `Task ${id}. Spec: ${specPath}. Depth: ${depth}.${flags.partial ? ' This is a PARTIAL run (see "Partial requests").' : ''}`,
@@ -2240,6 +2321,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   qa-run <id> --kind web|mobile [--depth d] [--partial] [--note ".."]
                                  run the external tester, check coverage, stamp (exit 6 = external failed, 2 = coverage gaps)
   playbook [design]              the tester's case catalogue (forms, fields, gestures, interruptions, network…); "playbook design" = the designer handbook
+  duo [on|off|setup]              iPhone Duo: readiness (SDK 58, Xcode 27.1, packages), switch the mode, install expo-hinge & co (setup [--service s] [--all] [--dry])
   model <agent> [<id>] [--core]    the model to pass to a subagent for the task's complexity (S/M/L); "model all" shows the table
   resume-info <id>               after an interruption: stage, branches, uncommitted changes, gates, active provider
   design-shot <file|url>         render a mockup (HTML) or the live app at several widths → PNGs + layout audit (for the designer)
@@ -2261,7 +2343,7 @@ const COMMANDS = {
   playbook: ({ pos }) => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, pos[0] === 'design' ? 'DESIGN_PLAYBOOK.md' : 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, model: cmdModel, 'resume-info': cmdResumeInfo, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, model: cmdModel, 'resume-info': cmdResumeInfo, duo: cmdDuo, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),

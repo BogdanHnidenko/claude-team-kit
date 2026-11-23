@@ -190,7 +190,7 @@ function webArgs(sub, rest, flags, session) {
     case 'wait': return num(rest[0]) ? { value: rest[0] } : { target: rest[0], value: rest[1] };
     case 'resize': return { width: rest[0], height: rest[1] };
     case 'net': case 'scheme': return { value: rest[0] };
-    case 'eval': return { value: rest.join(' ') };
+    case 'eval': return { value: flags.file ? fs.readFileSync(flags.file, 'utf8') : rest.join(' ') }; // --file: JS з файла, без лапок і ; | у команді
     case 'text': return { target: rest[0] };
     case 'look': return { name: rest[0], full: Boolean(flags.full), target: flags.target };
     case 'sweep': return { name: rest[0], widths: flags.widths ?? WIDTH_SETS[session.depth].join(',') };
@@ -296,7 +296,7 @@ async function mobileCommand(ctx, { P, session, sub, rest, flags, id }) {
       jr({ cmd: 'backend', args: rest }); log(`✔ бекенд: ${rest[0] === 'stop' ? 'призупинено (застосунок побачить обрив)' : 'відновлено'}`);
       break;
     }
-    case 'flow': step('flow', [rest.join(' ')]); break; // сирі команди Maestro (YAML)
+    case 'flow': step('flow', [flags.file ? fs.readFileSync(flags.file, 'utf8') : rest.join(' ')]); break; // сирі команди Maestro (YAML); --file: з файла
     case 'text': {
       const r = mobileLook(P, session, 'text');
       const name = flags.out ?? `text-${Date.now()}`;

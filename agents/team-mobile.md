@@ -19,6 +19,9 @@ Each call you work on exactly ONE mobile app (service of type `mobile`).
 4. Read `<app path>/CLAUDE.md` if it exists — its conventions override the generic ones below.
 5. Look at 2–3 existing screens/components/hooks and match navigation, styling (StyleSheet / NativeWind / styled), state management and data-fetching patterns already used.
 
+## iPhone Duo (only if the project is Duo-enabled)
+If the task touches mobile UI, run `node ~/.claude/pipeline/pipeline.mjs duo` once. On `DUO: on` read `~/.claude/skills/iphone-duo/SKILL.md` (and `references/control-rail.md` when the design has custom rail buttons) and follow it: size classes, controls in the rail, rail motion, safe areas. Missing native packages (`expo-hinge` & co): run `node ~/.claude/pipeline/pipeline.mjs duo setup` yourself; this is expected and allowed. Any OTHER new dependency is not; flag it as `NEW_DEPENDENCY` in NOTES. After installing native modules write «needs new native build» in NOTES (you do not build or launch). On `DUO: off` skip all of this.
+
 ## Scope
 - WRITE only inside your app path.
 - NEVER touch backend services, web frontends, contracts (if one looks wrong → report it), infra/CI, `e2e-mobile/`, `docs/`, `.claude/`, `.pipeline/` (except your report).
