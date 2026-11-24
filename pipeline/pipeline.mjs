@@ -758,6 +758,63 @@ function duoToolchain() {
 /** Xcode ≥ 27.1: порівняння версій «мажор.мінор». */
 const xcodeOk = (v) => { if (!v) return false; const [a, b = 0] = v.split('.').map(Number); return a > 27 || (a === 27 && b >= 1); };
 
+/** Профілі провайдерів для панелі VS Code: ті самі, що в scripts/claude-profiles.sh (моделі в усіх чотирьох слотах). */
+const PROVIDER_PROFILES = {
+  ds: { name: 'deepseek', base: 'https://api.deepseek.com/anthropic', keyvar: 'DEEPSEEK_API_KEY', opus: 'deepseek-v4-pro', sonnet: 'deepseek-v4-pro', haiku: 'deepseek-flash', main: 'deepseek-v4-pro' },
+  'ds-fast': { name: 'deepseek-fast', base: 'https://api.deepseek.com/anthropic', keyvar: 'DEEPSEEK_API_KEY', opus: 'deepseek-v4-pro', sonnet: 'deepseek-flash', haiku: 'deepseek-flash', main: 'deepseek-flash' },
+  kimi: { name: 'kimi', base: 'https://api.moonshot.ai/anthropic', keyvar: 'KIMI_API_KEY', opus: 'kimi-k3[1m]', sonnet: 'kimi-k3[1m]', haiku: 'kimi-k3[1m]', main: 'kimi-k3[1m]' },
+};
+/** Змінні, якими керує `pl provider`: лише їх додаємо й прибираємо, чужі налаштування не чіпаємо. */
+const PROVIDER_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'TEAM_KIT_NO_VISION', 'TEAM_KIT_PROVIDER'];
+
+/** Читає значення ключа з ~/.claude/providers.env (формат KEY=значення, без експорту в оточення). */
+function readProviderKey(keyvar) {
+  const f = process.env.TEAM_KIT_PROVIDERS_ENV ?? path.join(os.homedir(), '.claude', 'providers.env');
+  if (!fs.existsSync(f)) return { file: f, key: '' };
+  const m = fs.readFileSync(f, 'utf8').split('\n').map((l) => l.match(new RegExp(`^\\s*(?:export\\s+)?${keyvar}=(.*)$`))).find(Boolean);
+  return { file: f, key: m ? m[1].trim().replace(/^['"]|['"]$/g, '') : '' };
+}
+
+/** pl provider <ds|ds-fast|kimi|claude|status>: перемикає провайдера для ЦЬОГО проєкту (панель VS Code і термінал) через .claude/settings.local.json. */
+function cmdProvider({ pos }) {
+  const what = pos[0] ?? 'status';
+  const root = findRoot(process.cwd()) ?? process.cwd();
+  const file = path.join(root, '.claude', 'settings.local.json');
+  const cfg = fs.existsSync(file) ? readJson(file, null) ?? die(`${file} — некоректний JSON, не чіпаю`) : {};
+  cfg.env ??= {};
+  if (what === 'status') {
+    const cur = cfg.env.TEAM_KIT_PROVIDER;
+    log(cur ? `Проєкт ${root}: провайдер "${cur}" (ключ у .claude/settings.local.json). Повернути Claude: ${PL} provider claude` : `Проєкт ${root}: звичайний Claude (підписка). Перемкнути: ${PL} provider ds`);
+    log(`Ця сесія зараз: ${activeProvider()}`);
+    return;
+  }
+  if (what === 'claude' || what === 'off') {
+    const had = PROVIDER_ENV_KEYS.filter((k) => k in cfg.env);
+    for (const k of PROVIDER_ENV_KEYS) delete cfg.env[k];
+    if (!Object.keys(cfg.env).length) delete cfg.env;
+    if (had.length) fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+    log(had.length ? `✔ Знову звичайний Claude для ${root}. У VS Code: Cmd+Shift+P → "Developer: Reload Window", потім новий чат у панелі.` : 'Вже звичайний Claude: нічого не змінено.');
+    return;
+  }
+  const prof = PROVIDER_PROFILES[what] ?? die(`Usage: provider <${Object.keys(PROVIDER_PROFILES).join('|')}|claude|status>`);
+  const { file: envFile, key } = readProviderKey(prof.keyvar);
+  if (!key) die(`У ${envFile} немає ${prof.keyvar}. Запусти: bash install.sh --profiles`);
+  Object.assign(cfg.env, {
+    ANTHROPIC_BASE_URL: prof.base, ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_MODEL: prof.main,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: prof.opus, ANTHROPIC_DEFAULT_SONNET_MODEL: prof.sonnet, ANTHROPIC_DEFAULT_HAIKU_MODEL: prof.haiku,
+    TEAM_KIT_NO_VISION: '1', TEAM_KIT_PROVIDER: prof.name,
+  });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  log(`✔ Проєкт ${root} тепер працює через ${prof.name} (моделі: ${prof.opus} / ${prof.sonnet} / ${prof.haiku}).`);
+  // Ключ лежить у файлі: він не має потрапити в git
+  const ig = spawnSync('git', ['check-ignore', '-q', file], { cwd: root });
+  if (ig.status === 1) log(`⚠ ${path.relative(root, file)} НЕ в .gitignore, а в ньому ключ. Додай рядок ".claude/settings.local.json" у .gitignore.`);
+  log('Далі: у VS Code Cmd+Shift+P → "Developer: Reload Window", відкрий НОВИЙ чат у панелі (старий лишається на Claude).');
+  log(`Повернути Claude: ${PL} provider claude`);
+}
+
 /** pl duo | pl duo on|off | pl duo setup [--service s] [--all] [--dry]: готовність до iPhone Duo, вмикання режиму й встановлення пакетів. */
 function cmdDuo({ pos, flags }) {
   const { root, ws } = loadWorkspace();
@@ -2321,6 +2378,7 @@ const HELP = `Claude Team Kit — ${PL} <command>
   qa-run <id> --kind web|mobile [--depth d] [--partial] [--note ".."]
                                  run the external tester, check coverage, stamp (exit 6 = external failed, 2 = coverage gaps)
   playbook [design]              the tester's case catalogue (forms, fields, gestures, interruptions, network…); "playbook design" = the designer handbook
+  provider <ds|ds-fast|kimi|claude|status>  work through DeepSeek/Kimi in THIS project (VS Code panel too) via .claude/settings.local.json; claude = back
   duo [on|off|setup]              iPhone Duo: readiness (SDK 58, Xcode 27.1, packages), switch the mode, install expo-hinge & co (setup [--service s] [--all] [--dry])
   model <agent> [<id>] [--core]    the model to pass to a subagent for the task's complexity (S/M/L); "model all" shows the table
   resume-info <id>               after an interruption: stage, branches, uncommitted changes, gates, active provider
@@ -2343,7 +2401,7 @@ const COMMANDS = {
   playbook: ({ pos }) => process.stdout.write(fs.readFileSync(path.join(KIT_DIR, pos[0] === 'design' ? 'DESIGN_PLAYBOOK.md' : 'QA_PLAYBOOK.md'), 'utf8')), comments: cmdComments, sim: cmdSim, screen: cmdScreen,
   services: cmdServices, start: cmdStart, diff: cmdDiff, owner: cmdOwner, verify: cmdVerify, mark: cmdMark,
   commit: cmdCommit, rollback: cmdRollback, deploy: cmdDeploy, status: cmdStatus, scaffold: cmdScaffold,
-  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, model: cmdModel, 'resume-info': cmdResumeInfo, duo: cmdDuo, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
+  review: cmdReview, waive: cmdWaive, 'qa-provider': cmdQaProvider, eyes: cmdEyes, mail: cmdMail, compare: cmdCompare, 'design-shot': cmdDesignShot, model: cmdModel, 'resume-info': cmdResumeInfo, duo: cmdDuo, provider: cmdProvider, 'qa-run': cmdQaRun, 'qa-setup': cmdQaSetup, doctor: cmdDoctor, template: cmdTemplate, guard: cmdGuard,
   'install-hook': cmdInstallHook, 'uninstall-hook': cmdUninstallHook,
   'install-memory': cmdInstallMemory, 'uninstall-memory': cmdUninstallMemory,
   help: () => log(HELP),

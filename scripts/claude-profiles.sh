@@ -43,3 +43,14 @@ claude-free() {
   model="$( set -a; . "$envfile" >/dev/null 2>&1; printf '%s' "${FREELLM_MODEL:-auto}" )"
   _tk_launch free "$base" FREELLM_API_KEY "$model" "$model" "$model" "$model" "$@"
 }
+
+# Короткі команди (щоб не писати node ~/.claude/pipeline/pipeline.mjs):
+#   pl <команда>      те саме, що node ~/.claude/pipeline/pipeline.mjs <команда>   (наприклад: pl status, pl duo)
+#   use-ds            цей проєкт працює через DeepSeek (панель VS Code теж), потім Reload Window і НОВИЙ чат
+#   use-ds-fast       те саме, економний режим
+#   use-claude        повернути звичайний Claude для цього проєкту
+pl()            { node "$HOME/.claude/pipeline/pipeline.mjs" "$@"; }
+use-ds()        { pl provider ds; }
+use-ds-fast()   { pl provider ds-fast; }
+use-kimi()      { pl provider kimi; }
+use-claude()    { pl provider claude; }
