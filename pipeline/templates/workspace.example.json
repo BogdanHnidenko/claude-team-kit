@@ -124,11 +124,11 @@
       "deep": 20,
       "exhaustive": 45
     },
-    "providers": {
-      "web": "claude",
-      "mobile": "claude"
-    },
-    "fallback": "ask"
+    "timeoutSec": null
+  },
+  "models": {
+    "gemini": { "fast": "gemini-4-hydrogen-medium", "std": "gemini-4-hydrogen-high", "deep": "gemini-4-neon-high" },
+    "codex": { "fast": null, "std": null, "deep": null }
   },
   "contracts": {
     "path": "contracts",

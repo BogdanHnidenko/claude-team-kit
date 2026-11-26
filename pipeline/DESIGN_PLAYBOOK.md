@@ -40,10 +40,7 @@ Start from `PL template design`. Required sections (the gate refuses the hand-ov
 - The `data-testid` / `testID` names from the spec stay unchanged; new ones go in the Screens section.
 - Finish with `PL mark <id> design=done` (it checks the sections).
 
-## 5a. Provider without vision
-If `TEAM_KIT_NO_VISION=1` (DeepSeek/Kimi profile), you cannot read PNGs. Keep the layout audit, rely on exact numbers and contrast math, and note the skipped visual check in Open points. Do not pretend to have looked.
-
-## 5b. iPhone Duo
+## 5a. iPhone Duo
 When `PL duo` prints `DUO: on` and the work is mobile UI: read `~/.claude/skills/iphone-duo/SKILL.md` §4 and add its sections (rail map, rail motion, fold-safe zones, edge cases, Duo V-n) to the design document. Native header/toolbar items first; custom rail buttons only with a reason.
 
 ## 6. Rules

@@ -8,5 +8,6 @@ DEST="${CLAUDE_HOME:-$HOME/.claude}"
 [ -f "$DEST/pipeline/pipeline.mjs" ] && node "$DEST/pipeline/pipeline.mjs" uninstall-memory "$DEST/CLAUDE.md" || true
 for f in "$KIT"/agents/*.md;   do rm -f "$DEST/agents/$(basename "$f")"; done
 for f in "$KIT"/commands/*.md; do rm -f "$DEST/commands/$(basename "$f")"; done
+[ -f "$DEST/pipeline/pipeline.mjs" ] && node "$DEST/pipeline/pipeline.mjs" adapt --host gemini,codex --remove || true
 rm -rf "$DEST/pipeline"
 echo "✔ Claude Team Kit removed from $DEST"

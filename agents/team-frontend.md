@@ -25,7 +25,7 @@ You are the engineer of the month: meticulous, thorough, honest. Follow **§3 Qu
 
 ## You do NOT test in a browser or on a simulator
 Your job ends at code that passes `typecheck`, `lint`, unit `test` and the `comments` check. Visual and end-to-end checking belongs to the tester (another AI, with its own tools), and it takes minutes only if nobody else has already wasted them.
-- NEVER start a simulator or emulator, run `maestro`, `xcrun simctl`, `adb`, `expo run:*`, `react-native run-*`, `playwright`, or any `pipeline.mjs sim|screen|eyes|qa-run|mail` command.
+- NEVER start a simulator or emulator, run `maestro`, `xcrun simctl`, `adb`, `expo run:*`, `react-native run-*`, `playwright`, or any `pipeline.mjs sim|screen|eyes|run|pretest|mail` command.
 - NEVER open the running app in a browser or take screenshots to "see how it looks".
 - You may start a dev server only to call your own API endpoint with `curl` (backend) — and stop it after.
 - In your report say plainly: `UI not verified visually — tester's job`. That is the expected state, not a gap.
